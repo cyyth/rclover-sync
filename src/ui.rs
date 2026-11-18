@@ -1,6 +1,7 @@
 //! The Nuvolo window: account sidebar plus Overview, Folders, Transfers and Preferences pages.
 
 use crate::config::Mode;
+use crate::homedirs;
 use crate::engine::Shared;
 use adw::prelude::*;
 use gtk::{gio, glib, pango};
@@ -99,6 +100,7 @@ pub struct Ui {
     // Preferences
     client_row: adw::ActionRow,
     ignore: gtk::ListBox,
+    home: gtk::ListBox,
 }
 
 fn label(text: &str, classes: &[&str]) -> gtk::Label {
@@ -197,6 +199,7 @@ impl Ui {
         header.set_title_widget(Some(&title));
         let menu = gio::Menu::new();
         menu.append(Some("Add Cloud Account…"), Some("app.add-account"));
+        menu.append(Some("About Nuvolo"), Some("app.about"));
         menu.append(Some("Quit"), Some("app.quit"));
         header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Main Menu").build());
         let theme_btn = gtk::Button::builder().icon_name("weather-clear-night-symbolic").tooltip_text("Toggle light/dark style").build();
@@ -315,6 +318,7 @@ impl Ui {
             done: boxed(),
             client_row: adw::ActionRow::builder().title("OAuth Client").build(),
             ignore: boxed(),
+            home: boxed(),
         });
         ui.build_pages(&grid);
         ui.wire();
@@ -453,6 +457,13 @@ impl Ui {
         for w in [transfers.upcast_ref::<gtk::Widget>(), checkers.upcast_ref(), size.upcast_ref(), age.upcast_ref(), modtime.upcast_ref()] {
             g.add(w);
         }
+        page.add(&g);
+
+        let g = group(
+            "Home Folders",
+            Some("Keep these folders in the cloud. The folder in your home becomes a link to its copy in the drive, which stays available offline. Your current folder is kept as a backup."),
+        );
+        g.add(&self.home);
         page.add(&g);
 
         let g = group("OAuth & Security", None);
@@ -615,6 +626,7 @@ impl Ui {
         self.banner.set_revealed(shared);
         self.client_row.set_subtitle(if client_id.is_empty() { "rclone shared client (rate-limited)" } else { client_id });
         self.load_folders();
+        self.rebuild_home();
         self.tick();
     }
 
@@ -690,6 +702,120 @@ impl Ui {
         }
         row.add_suffix(&linked);
         row
+    }
+
+    /// Rows for the XDG folders: "Move to <account>" or "Move Back to This Device".
+    fn rebuild_home(self: &Rc<Self>) {
+        self.home.remove_all();
+        let Some(mount) = self.e.borrow().cfg.accounts.get(self.acct.get()).map(|a| a.mount.clone()) else {
+            self.home.append(&placeholder("Add a cloud account first"));
+            return;
+        };
+        for dir in homedirs::FOLDERS {
+            let Some(home) = homedirs::home_path(dir) else { continue };
+            let linked = homedirs::is_linked(&home, &mount);
+            let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&name).as_str())
+                .subtitle(glib::markup_escape_text(&if linked {
+                    format!("Stored in {}", homedirs::cloud_path(&mount, &home).display())
+                } else {
+                    format!("On this device ({})", home.display())
+                }).as_str())
+                .build();
+            row.add_prefix(&gtk::Image::from_icon_name(if linked { "folder-remote-symbolic" } else { "folder-symbolic" }));
+            let btn = button(if linked { "Move Back" } else { "Move to Cloud" });
+            let (ui, home2, mount2) = (self.clone(), home.clone(), mount.clone());
+            btn.connect_clicked(move |_| if linked { ui.unlink_home(&home2, &mount2) } else { ui.link_home(&home2, &mount2) });
+            row.add_suffix(&btn);
+            self.home.append(&row);
+        }
+    }
+
+    fn link_home(self: &Rc<Self>, home: &std::path::Path, mount: &std::path::Path) {
+        let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let cloud = homedirs::cloud_path(mount, home);
+        let d = adw::AlertDialog::new(
+            Some(&format!("Move {name} to the Cloud?")),
+            Some(&format!(
+                "{} will become a link to {}, kept available offline. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.",
+                home.display(), cloud.display(), homedirs::backup_root().display()
+            )),
+        );
+        d.add_response("cancel", "Cancel");
+        d.add_response("move", "Move to Cloud");
+        d.set_response_appearance("move", adw::ResponseAppearance::Suggested);
+        let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
+        d.connect_response(Some("move"), move |_, _| {
+            let i = ui.acct.get();
+            if !ui.e.borrow().is_mounted(i) {
+                return ui.toast("The drive is not mounted; try again once it is.");
+            }
+            let backup = match homedirs::link(&home, &mount, &homedirs::backup_root()) {
+                Ok(b) => b,
+                Err(e) => return ui.toast(&format!("Could not move {}: {e}", home.display())),
+            };
+            let rel = cloud.strip_prefix(&mount).unwrap_or(&cloud).to_string_lossy().into_owned();
+            if let Err(e) = ui.e.borrow_mut().set_mode(i, &rel, Mode::Pinned) {
+                eprintln!("nuvolo: pin {rel}: {e}");
+            }
+            ui.rebuild_home();
+            ui.toast(&format!("Copying {} to the cloud…", home.display()));
+            let (ui, cloud) = (ui.clone(), cloud.clone());
+            glib::spawn_future_local(async move {
+                let b = backup.clone();
+                let res = gio::spawn_blocking(move || homedirs::merge_into(&b, &cloud)).await;
+                ui.toast(&match res {
+                    Ok(Ok(())) => format!("Done. The original is kept in {}", backup.display()),
+                    Ok(Err(e)) => format!("Copy stopped: {e}. Nothing was lost: the original is in {}", backup.display()),
+                    Err(_) => format!("Copy stopped. Nothing was lost: the original is in {}", backup.display()),
+                });
+            });
+        });
+        d.present(Some(&self.window));
+    }
+
+    fn unlink_home(self: &Rc<Self>, home: &std::path::Path, mount: &std::path::Path) {
+        let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let d = adw::AlertDialog::new(
+            Some(&format!("Move {name} Back to This Device?")),
+            Some(&format!("Nuvolo downloads a copy of the cloud folder into {}. The cloud copy is kept.", home.display())),
+        );
+        d.add_response("cancel", "Cancel");
+        d.add_response("back", "Move Back");
+        let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
+        d.connect_response(Some("back"), move |_, _| {
+            ui.toast(&format!("Downloading {}…", home.display()));
+            let (ui, home, mount) = (ui.clone(), home.clone(), mount.clone());
+            glib::spawn_future_local(async move {
+                let h = home.clone();
+                let res = gio::spawn_blocking(move || homedirs::unlink(&h, &mount)).await;
+                ui.rebuild_home();
+                ui.toast(&match res {
+                    Ok(Ok(())) => format!("{} is back on this device", home.display()),
+                    Ok(Err(e)) => format!("Could not move it back: {e}. The link is unchanged."),
+                    Err(_) => "Could not move it back. The link is unchanged.".to_owned(),
+                });
+            });
+        });
+        d.present(Some(&self.window));
+    }
+
+    pub fn about(&self) {
+        let d = adw::AboutDialog::builder()
+            .application_name("Nuvolo")
+            .application_icon(crate::APP_ID)
+            .version(env!("CARGO_PKG_VERSION"))
+            .comments("Cloud drives on demand for GNOME, powered by rclone.")
+            .developer_name("Nuvolo contributors")
+            .license_type(gtk::License::Gpl30)
+            .website(crate::REPO_URL)
+            .issue_url(format!("{}/issues", crate::REPO_URL))
+            .build();
+        d.add_link("Documentation", crate::DOCS_URL);
+        d.add_link("GNOME Files Extension", "https://github.com/cyythanapong-netizen/nuvolo-nautilus");
+        d.add_link("rclone", "https://rclone.org");
+        d.present(Some(&self.window));
     }
 
     fn rebuild_ignore(self: &Rc<Self>) {
@@ -830,7 +956,7 @@ impl Ui {
         self.pause_row.set_subtitle(&format!("{transferring} active · {pending} uploads waiting"));
 
         if page == "overview" {
-            let speed = e.core["speed"].as_f64().unwrap_or(0.0);
+            let speed = e.speed;
             self.stat_fps.set_label(&e.files_per_sec.to_string());
             self.stat_speed.set_label(&format!("{}/s", human(speed)));
             self.stat_speed_sub.set_label(&format!("{} transferred this session", human(e.core["bytes"].as_f64().unwrap_or(0.0))));

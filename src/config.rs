@@ -44,6 +44,13 @@ impl Account {
         }
     }
 
+    /// True if a folder strictly inside `rel` is pinned.
+    pub fn has_pinned_below(&self, rel: &str) -> bool {
+        let rel = rel.trim_matches('/');
+        let prefix = if rel.is_empty() { String::new() } else { format!("{rel}/") };
+        self.modes.iter().any(|(p, m)| *m == Mode::Pinned && p.len() > prefix.len() && p.starts_with(&prefix))
+    }
+
     /// False when the whole drive is pinned (a full offline mirror).
     pub fn on_demand(&self) -> bool {
         self.modes.get("") != Some(&Mode::Pinned)
@@ -137,6 +144,9 @@ mod tests {
         assert_eq!(a.mode_of("Projects"), Mode::Pinned);
         assert_eq!(a.mode_of("Projects/web/src/main.rs"), Mode::Pinned);
         assert_eq!(a.mode_of("Projects/web/node_modules/x/y.js"), Mode::Excluded);
+        assert!(a.has_pinned_below(""));
+        assert!(!a.has_pinned_below("Projects"));
+        assert!(!a.has_pinned_below("Documents"));
         a.modes.insert(String::new(), Mode::Pinned);
         assert_eq!(a.mode_of("Documents/a.txt"), Mode::Pinned);
     }

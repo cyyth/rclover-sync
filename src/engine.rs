@@ -17,6 +17,8 @@ pub type Shared = Rc<RefCell<Engine>>;
 pub enum FileState {
     Cloud,
     Cached,
+    /// A folder with some pinned or cached content that is not pinned itself.
+    Partial,
     Pinned,
     Syncing,
     Error,
@@ -27,6 +29,7 @@ impl FileState {
         match self {
             Self::Cloud => "cloud",
             Self::Cached => "cached",
+            Self::Partial => "partial",
             Self::Pinned => "pinned",
             Self::Syncing => "syncing",
             Self::Error => "error",
@@ -48,7 +51,10 @@ pub struct Engine {
     pub mount_errors: HashMap<String, String>,
     pub paused: bool,
     pub files_per_sec: u64,
+    /// Bytes per second over the last tick (rclone's own speed is a session average).
+    pub speed: f64,
     last_count: Option<u64>,
+    last_bytes: Option<(f64, std::time::Instant)>,
     syncing: HashSet<PathBuf>,
     errors: HashSet<PathBuf>,
     /// Accounts whose remount was deferred because uploads were pending.
@@ -72,7 +78,9 @@ impl Engine {
             mount_errors: HashMap::new(),
             paused: false,
             files_per_sec: 0,
+            speed: 0.0,
             last_count: None,
+            last_bytes: None,
             syncing: HashSet::new(),
             errors: HashSet::new(),
             remount_later: HashSet::new(),
@@ -121,8 +129,11 @@ impl Engine {
         })
     }
 
-    /// Remounts to apply filter or cache settings. While uploads are pending it waits and
-    /// retries from `tick`, so queued writes are never cut off.
+    /// Remounts to apply filter or cache settings. While uploads are pending or the mount is
+    /// busy (open in Files), it retries from `tick` instead.
+    ///
+    /// Never detach a busy mount lazily: when the last user of the old mount lets go, rclone's
+    /// cleanup unmounts the mount point, which by then is the new mount (issue #1).
     pub fn remount(&mut self, i: usize) -> Result<(), String> {
         let a = self.cfg.accounts.get(i).ok_or("no such account")?;
         let pending = self.pending_uploads(&a.remote);
@@ -130,16 +141,39 @@ impl Engine {
             self.remount_later.insert(i);
             return Err(format!("{pending} uploads pending; it will apply when they finish"));
         }
-        self.remount_later.remove(&i);
         if self.client.call("mount/unmount", json!({ "mountPoint": a.mount })).is_err() {
-            // Busy (e.g. open in Files): detach lazily; open handles keep the old view.
-            let _ = std::process::Command::new("fusermount3").arg("-uz").arg(&a.mount).status();
+            self.remount_later.insert(i);
+            return Err("the drive is in use; it will apply once no window has it open".into());
         }
+        self.remount_later.remove(&i);
         self.mount(i);
         match self.mount_errors.get(&self.cfg.accounts[i].remote) {
             Some(e) => Err(e.clone()),
             None => Ok(()),
         }
+    }
+
+    /// Remounts any account whose mount has disappeared (crash of a FUSE helper, a manual
+    /// unmount, a suspend glitch), so ~/Cloud never silently goes empty.
+    fn heal_mounts(&mut self) {
+        let mounted = mounted_paths();
+        for i in 0..self.cfg.accounts.len() {
+            let a = &self.cfg.accounts[i];
+            if self.remount_later.contains(&i) || mounted.contains(&a.mount) {
+                continue;
+            }
+            // A failing mount is retried every 30 s, a lost one right away.
+            if self.mount_errors.contains_key(&a.remote) && self.ticks % 30 != 0 {
+                continue;
+            }
+            eprintln!("nuvolo: {} is not mounted, mounting again", a.mount.display());
+            let _ = self.client.call("mount/unmount", json!({ "mountPoint": a.mount }));
+            self.mount(i);
+        }
+    }
+
+    pub fn is_mounted(&self, i: usize) -> bool {
+        self.cfg.accounts.get(i).is_some_and(|a| mounted_paths().contains(&a.mount))
     }
 
     pub fn add_account(&mut self, remote: &str) -> usize {
@@ -157,6 +191,13 @@ impl Engine {
             let count = v["transfers"].as_u64().unwrap_or(0) + v["checks"].as_u64().unwrap_or(0);
             self.files_per_sec = self.last_count.map_or(0, |c| count.saturating_sub(c));
             self.last_count = Some(count);
+            let now = std::time::Instant::now();
+            let bytes = v["bytes"].as_f64().unwrap_or(0.0);
+            self.speed = match self.last_bytes {
+                Some((b, t)) if !self.paused => ((bytes - b) / now.duration_since(t).as_secs_f64().max(0.001)).max(0.0),
+                _ => 0.0,
+            };
+            self.last_bytes = Some((bytes, now));
             self.core = v;
         }
         for a in &self.cfg.accounts {
@@ -185,8 +226,11 @@ impl Engine {
         if self.ticks % 3600 == 0 {
             self.refresh_pins();
         }
-        for i in self.remount_later.clone() {
-            let _ = self.remount(i);
+        if self.ticks % 5 == 0 {
+            for i in self.remount_later.clone() {
+                let _ = self.remount(i);
+            }
+            self.heal_mounts();
         }
         changed
     }
@@ -223,10 +267,13 @@ impl Engine {
             FileState::Error
         } else if a.mode_of(&rel) == Mode::Pinned {
             FileState::Pinned
-        } else if self.cache_root(&a.remote).join(&rel).exists() {
-            FileState::Cached
         } else {
-            FileState::Cloud
+            let cached = self.cache_root(&a.remote).join(&rel);
+            match (abs.is_dir(), cached.exists()) {
+                (true, has_cache) if has_cache || a.has_pinned_below(&rel) => FileState::Partial,
+                (false, true) => FileState::Cached,
+                _ => FileState::Cloud,
+            }
         })
     }
 
@@ -267,7 +314,7 @@ impl Engine {
         let target = a.mount.join(&rel);
         self.save();
         if mode == Mode::Pinned {
-            hydrate(target);
+            hydrate(target, self.cfg.transfers);
         }
         if touches_filter {
             self.remount(i)?;
@@ -308,7 +355,7 @@ impl Engine {
         } else {
             Path::new(&rel).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
         };
-        let (client, fs_, pinned, abs) = (self.client.clone(), a.fs(), a.mode_of(&rel) == Mode::Pinned, abs.to_path_buf());
+        let (client, fs_, pinned, abs, workers) = (self.client.clone(), a.fs(), a.mode_of(&rel) == Mode::Pinned, abs.to_path_buf(), self.cfg.transfers);
         std::thread::spawn(move || {
             let mut params = json!({ "fs": fs_ });
             if !dir.is_empty() {
@@ -318,7 +365,7 @@ impl Engine {
                 eprintln!("nuvolo: vfs/refresh: {e}");
             }
             if pinned {
-                read_all(&abs);
+                read_all(&abs, workers);
             }
         });
     }
@@ -339,7 +386,7 @@ impl Engine {
         if jobs.is_empty() {
             return;
         }
-        let client = self.client.clone();
+        let (client, workers) = (self.client.clone(), self.cfg.transfers);
         std::thread::spawn(move || {
             for (fs_, rel, abs) in jobs {
                 let mut params = json!({ "fs": fs_, "recursive": true });
@@ -347,7 +394,7 @@ impl Engine {
                     params["dir"] = json!(rel);
                 }
                 let _ = client.call("vfs/refresh", params);
-                read_all(&abs);
+                read_all(&abs, workers);
             }
         });
     }
@@ -367,19 +414,68 @@ impl Engine {
 }
 
 /// Reads `path` through the mount in the background, which pulls it into the VFS cache.
-pub fn hydrate(path: PathBuf) {
-    std::thread::spawn(move || read_all(&path));
+pub fn hydrate(path: PathBuf, workers: u32) {
+    std::thread::spawn(move || read_all(&path, workers));
 }
 
-fn read_all(p: &Path) {
-    let Ok(meta) = fs::symlink_metadata(p) else { return };
-    if meta.is_dir() {
-        for e in fs::read_dir(p).into_iter().flatten().flatten() {
-            read_all(&e.path());
+/// Reads every file under `root` with `workers` parallel readers, so pinning a folder
+/// downloads as many files at once as rclone is allowed to transfer.
+fn read_all(root: &Path, workers: u32) {
+    let mut files = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        let Ok(meta) = fs::symlink_metadata(&d) else { continue };
+        if meta.is_file() {
+            files.push(d);
+        } else if meta.is_dir() {
+            dirs.extend(fs::read_dir(&d).into_iter().flatten().flatten().map(|e| e.path()));
         }
-    } else if meta.is_file() {
-        if let Ok(mut f) = fs::File::open(p) {
-            let _ = io::copy(&mut f, &mut io::sink());
+    }
+    let queue = std::sync::Mutex::new(files);
+    std::thread::scope(|s| {
+        for _ in 0..workers.max(1) {
+            s.spawn(|| loop {
+                let Some(f) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop() else { break };
+                if let Ok(mut file) = fs::File::open(&f) {
+                    let _ = io::copy(&mut file, &mut io::sink());
+                }
+            });
         }
+    });
+}
+
+/// Mount points currently listed in /proc/self/mounts.
+fn mounted_paths() -> HashSet<PathBuf> {
+    parse_mounts(&fs::read_to_string("/proc/self/mounts").unwrap_or_default())
+}
+
+fn parse_mounts(text: &str) -> HashSet<PathBuf> {
+    text.lines()
+        .filter_map(|l| l.split(' ').nth(1))
+        // The kernel escapes spaces, tabs, newlines and backslashes as octal.
+        .map(|p| PathBuf::from(p.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_escaped_mount_points() {
+        let m = parse_mounts("gdrive: /home/me/Cloud/My\\040Drive fuse.rclone rw 0 0\nproc /proc proc rw 0 0\n");
+        assert!(m.contains(Path::new("/home/me/Cloud/My Drive")));
+        assert!(m.contains(Path::new("/proc")));
+    }
+
+    #[test]
+    fn read_all_reads_every_file_in_parallel() {
+        let dir = std::env::temp_dir().join(format!("nuvolo-test-{}", std::process::id()));
+        fs::create_dir_all(dir.join("a/b")).unwrap();
+        for f in ["x", "a/y", "a/b/z"] {
+            fs::write(dir.join(f), b"data").unwrap();
+        }
+        read_all(&dir, 3); // must terminate and not panic
+        fs::remove_dir_all(dir).unwrap();
     }
 }

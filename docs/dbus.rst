@@ -11,7 +11,9 @@ it. This document is the contract between the two repositories.
 All paths are absolute local paths inside a mount, such as
 ``/home/me/Cloud/gdrive/Documents/a.pdf``.
 
-States are one of ``cloud``, ``cached``, ``pinned``, ``syncing`` and ``error``.
+States are one of ``cloud``, ``cached``, ``partial``, ``pinned``, ``syncing`` and ``error``.
+``partial`` is only used for folders: the folder is not pinned, but some of its content is
+pinned or cached.
 Paths outside every mount are left out of results.
 
 Methods

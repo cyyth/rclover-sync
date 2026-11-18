@@ -1,6 +1,7 @@
 mod config;
 mod dbus;
 mod engine;
+mod homedirs;
 mod rclone;
 mod tray;
 mod ui;
@@ -9,6 +10,8 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 pub const APP_ID: &str = "io.github.cyythanapong_netizen.Nuvolo";
+pub const REPO_URL: &str = "https://github.com/cyythanapong-netizen/nuvolo-sync";
+pub const DOCS_URL: &str = "https://cyythanapong-netizen.github.io/nuvolo-sync/";
 
 const CSS: &str = "
 .pill-badge { border-radius: 9999px; padding: 2px 10px; font-weight: bold; font-size: 0.85em; }
@@ -53,7 +56,11 @@ fn startup(app: &adw::Application) {
     let add = gio::ActionEntry::builder("add-account")
         .activate(move |app: &adw::Application, _, _| ui::present(app, &e2).add_account())
         .build();
-    app.add_action_entries([quit, add]);
+    let e6 = e.clone();
+    let about = gio::ActionEntry::builder("about")
+        .activate(move |app: &adw::Application, _, _| ui::present(app, &e6).about())
+        .build();
+    app.add_action_entries([quit, add, about]);
     app.set_accels_for_action("app.quit", &["<Control>q"]);
 
     let (tray, tray_rx) = tray::spawn();
