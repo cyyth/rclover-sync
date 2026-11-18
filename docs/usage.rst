@@ -32,6 +32,28 @@ Excluding a folder remounts the drive to hide it. If uploads are still pending, 
 for them to finish first.
 Turning off **On-Demand Streaming** on the Overview page pins the whole drive.
 
+Home folders
+------------
+
+Preferences → **Home Folders** moves Documents, Pictures, Music and the other XDG folders
+into the selected drive. The real folder then lives in the drive (for example
+``~/Cloud/gdrive/Documents``), and ``~/Documents`` becomes a link to it. The folder is set
+to Offline, so it works without a connection while Nuvolo is running.
+
+Moving never deletes anything:
+
+1. The original folder is renamed to ``~/.local/share/nuvolo/backups/<Name>-<date>``.
+2. ``~/<Name>`` becomes a link to the cloud folder.
+3. The files are copied into the cloud folder. A name that already exists there is kept
+   side by side as ``name (this device).ext``.
+
+Delete the backup yourself once you have checked the cloud copy. **Move Back** downloads a
+copy of the cloud folder and puts a real folder back in ``~``; the cloud copy is kept.
+
+.. note::
+   While Nuvolo is not running, the drive is not mounted and these links point nowhere.
+   Turn on **Start at Login**.
+
 Start at login and the top bar
 ------------------------------
 

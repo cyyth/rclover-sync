@@ -19,7 +19,7 @@ nuvolo
 
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/) (reStructuredText, built with Sphinx: `make docs`).
+Documentation: https://cyythanapong-netizen.github.io/nuvolo-sync/ (sources in [`docs/`](docs/), built with Sphinx).
 
 ## License
 
