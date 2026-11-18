@@ -69,8 +69,12 @@ Home folders
 
 Preferences → **Home Folders** moves Documents, Pictures, Music and the other XDG folders
 into the selected drive. The real folder then lives in the drive (for example
-``~/Cloud/gdrive/Documents``), and ``~/Documents`` becomes a link to it. The folder is set
-to Offline, so it is there even when Nuvolo is not running (see :ref:`offline-copies`).
+``~/Cloud/gdrive/Documents``), and ``~/Documents`` becomes a link to it.
+
+That is all a home folder setting does: it makes the link. How the cloud folder is kept is
+set on the **Folders & Cache** page like for any other folder: On-Demand, Offline, or a mix
+of modes for the folders inside it. Each row shows the current mode. A folder set to
+Excluded is hidden from the drive, so its row is greyed out until you change that.
 
 Moving never deletes anything:
 
@@ -112,9 +116,10 @@ linked folder against its newest backup and copies whatever is missing.
 When Nuvolo is not running
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The folder still works: ``~/Documents`` then shows its offline copy, and what you change
-there is uploaded the next time Nuvolo runs. The copy is only as fresh as the last sync, so
-moving a folder to the cloud also turns on **Start at Login**.
+What you get depends on the folder's mode. Whatever is set to Offline is there as its
+offline copy (see :ref:`offline-copies`), and changes you make to it are uploaded the next
+time Nuvolo runs. On-Demand content is not there: the link leads to an empty folder until
+Nuvolo mounts the drive. Turn on **Start at Login** to keep that window short.
 
 Start at login and the top bar
 ------------------------------

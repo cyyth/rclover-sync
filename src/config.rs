@@ -60,6 +60,14 @@ impl Account {
         format!("{}:", self.remote)
     }
 
+    /// True if something strictly inside `rel` has its own mode, different from `rel`'s.
+    pub fn is_mixed(&self, rel: &str) -> bool {
+        let rel = rel.trim_matches('/');
+        let own = self.mode_of(rel);
+        let prefix = if rel.is_empty() { String::new() } else { format!("{rel}/") };
+        self.modes.iter().any(|(p, m)| *m != own && p.len() > prefix.len() && p.starts_with(&prefix))
+    }
+
     /// The mode of `rel`, inherited from its nearest configured ancestor.
     pub fn mode_of(&self, rel: &str) -> Mode {
         let mut p = rel.trim_matches('/');
@@ -147,6 +155,9 @@ mod tests {
         assert!(a.has_pinned_below(""));
         assert!(!a.has_pinned_below("Projects"));
         assert!(!a.has_pinned_below("Documents"));
+        assert!(a.is_mixed("Projects"), "web/node_modules is excluded inside a pinned folder");
+        assert!(!a.is_mixed("Projects/web/src"));
+        assert!(!a.is_mixed("Documents"));
         a.modes.insert(String::new(), Mode::Pinned);
         assert_eq!(a.mode_of("Documents/a.txt"), Mode::Pinned);
     }

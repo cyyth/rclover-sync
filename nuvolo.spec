@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           nuvolo
-Version:        0.2.0
+Version:        0.2.1
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -42,6 +42,11 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
 
 %changelog
+* Wed Nov 18 2026 Thanapong Chuangyanyong - 0.2.1-1
+- Home Folders only make the link: the folder's mode comes from Folders & Cache (no more
+  automatic pinning or Start at Login); rows show the mode, mixed modes, and are greyed
+  out for Excluded folders
+
 * Wed Nov 18 2026 Thanapong Chuangyanyong - 0.2.0-1
 - Offline copies: pinned folders and files stay available at the same path when Nuvolo is
   not running or the drive cannot be mounted, synced both ways with the cloud

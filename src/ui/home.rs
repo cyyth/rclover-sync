@@ -15,6 +15,10 @@ use std::sync::atomic::Ordering;
 impl Ui {
     /// Rows for the XDG folders, from what is on disk (links and job files), so a move that
     /// failed or was cut short shows as such, with Resume and Undo, after a restart too.
+    ///
+    /// A row is only the link. How the cloud folder is kept (On-Demand, Offline, Excluded, or
+    /// a mix inside it) is set on the Folders & Cache page, and each row just shows it. An
+    /// Excluded folder is hidden from the drive, so its row is greyed out.
     pub(super) fn rebuild_home(self: &Rc<Self>) {
         self.home.remove_all();
         let Some(mount) = self.e.borrow().cfg.accounts.get(self.acct.get()).map(|a| a.mount.clone()) else {
@@ -27,6 +31,17 @@ impl Ui {
             let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let cloud = homedirs::cloud_path(&mount, &home);
             let status = homedirs::status(&home, &mount, &jobs);
+            let (mode, mixed) = self.e.borrow().cfg.accounts.get(self.acct.get()).map_or((Mode::OnDemand, false), |a| (a.mode_of(&name), a.is_mixed(&name)));
+            let kept = match mode {
+                Mode::OnDemand => "On-Demand: files download when opened, so the link needs Nuvolo running",
+                Mode::Pinned => "Offline: kept on this device, also when Nuvolo is not running",
+                Mode::Excluded => "",
+            };
+            let kept = if mixed { format!("{kept}. Some folders inside are set differently.") } else { format!("{kept}.") };
+            let excluded = format!(
+                "Excluded on the Folders & Cache page, so the drive hides {}. Set it to On-Demand or Offline there to use it.",
+                cloud.display()
+            );
             let row = adw::ActionRow::builder().title(glib::markup_escape_text(&name).as_str()).subtitle_lines(0).build();
             let sub = |t: &str| row.set_subtitle(&glib::markup_escape_text(t));
             let icon = match &status {
@@ -49,15 +64,19 @@ impl Ui {
                 continue;
             }
             match status {
+                Status::Local | Status::Linked if mode == Mode::Excluded => {
+                    sub(&excluded);
+                    row.set_sensitive(false);
+                }
                 Status::Local => {
-                    sub(&format!("On this device ({})", home.display()));
+                    sub(&format!("On this device ({}). Its cloud folder is set to {kept}", home.display()));
                     self.home_button(&row, "Move to Cloud", false, {
                         let (ui, home, mount) = (self.clone(), home.clone(), mount.clone());
                         move || ui.link_home(&home, &mount)
                     });
                 }
                 Status::Linked => {
-                    sub(&format!("Stored in {}, kept offline", cloud.display()));
+                    sub(&format!("Linked to {} · {kept}", cloud.display()));
                     self.home_button(&row, "Move Back", false, {
                         let (ui, home, mount) = (self.clone(), home.clone(), mount.clone());
                         move || ui.unlink_home(&home, &mount)
@@ -127,7 +146,7 @@ impl Ui {
         let d = adw::AlertDialog::new(
             Some(&format!("Move {name} to the Cloud?")),
             Some(&format!(
-                "{} will become a link to {}, kept available offline. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.\n\nThe link works only while Nuvolo runs, so Start at Login is turned on.",
+                "{} will become a link to {}. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.\n\nWhat stays on this device follows the Folders & Cache page. Only folders set to Offline are there when Nuvolo is not running.",
                 home.display(), cloud.display(), homedirs::backup_root().display()
             )),
         );
@@ -138,7 +157,7 @@ impl Ui {
         d.connect_response(Some("cancel"), move |_, _| ui.rebuild_home());
         let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
         d.connect_response(Some("move"), move |_, _| {
-            let Some(i) = ui.e.borrow().mounted_account(&mount) else {
+            if ui.e.borrow().mounted_account(&mount).is_none() {
                 ui.rebuild_home();
                 return ui.toast("The drive is not mounted; see Overview for why, and try again once it is.");
             };
@@ -146,11 +165,6 @@ impl Ui {
                 ui.rebuild_home();
                 return ui.toast(&explain(&format!("Could not move {}: {e}", home.display())));
             }
-            let rel = cloud.strip_prefix(&mount).unwrap_or(&cloud).to_string_lossy().into_owned();
-            if let Err(e) = ui.e.borrow_mut().set_mode(i, &rel, Mode::Pinned) {
-                eprintln!("nuvolo: pin {rel}: {e}");
-            }
-            ui.login.set_active(true); // writes the autostart entry
             match homedirs::read_job(&homedirs::jobs_root(), &home) {
                 Some(job) => homedirs::run(&ui.e, home.clone(), mount.clone(), job),
                 None => ui.rebuild_home(),
@@ -184,3 +198,4 @@ impl Ui {
         d.present(Some(&self.window));
     }
 }
+
