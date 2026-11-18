@@ -9,6 +9,7 @@ use gtk::glib::{self, UserDirectory};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const FOLDERS: [UserDirectory; 7] = [
     UserDirectory::Desktop,
@@ -67,20 +68,21 @@ pub fn link(home: &Path, mount: &Path, backups: &Path) -> io::Result<PathBuf> {
 
 /// Turns the symlink back into a real folder holding a copy of the cloud folder.
 /// The cloud copy is kept. Slow: run it off the main thread.
-pub fn unlink(home: &Path, mount: &Path) -> io::Result<()> {
+pub fn unlink(home: &Path, mount: &Path, copied: &AtomicUsize) -> io::Result<()> {
     if !is_linked(home, mount) {
         return Err(io::Error::other(format!("{} is not stored in the cloud", home.display())));
     }
     let staging = home.with_file_name(format!(".{}.nuvolo-restore", home.file_name().unwrap_or_default().to_string_lossy()));
     fs::create_dir_all(&staging)?;
-    merge_into(&cloud_path(mount, home), &staging)?;
+    merge_into(&cloud_path(mount, home), &staging, copied)?;
     fs::remove_file(home)?; // the symlink only
     fs::rename(&staging, home)
 }
 
 /// Copies everything in `from` into `to`. A file whose name is taken in `to` is copied
-/// under a new name ("report (this device).pdf") instead of overwriting.
-pub fn merge_into(from: &Path, to: &Path) -> io::Result<()> {
+/// under a new name ("report (this device).pdf") instead of overwriting. `copied` counts
+/// the files copied so far, for progress display.
+pub fn merge_into(from: &Path, to: &Path, copied: &AtomicUsize) -> io::Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let src = entry.path();
@@ -91,18 +93,20 @@ pub fn merge_into(from: &Path, to: &Path) -> io::Result<()> {
                 dst = free_name(&dst);
             }
             fs::create_dir_all(&dst)?;
-            merge_into(&src, &dst)?;
+            merge_into(&src, &dst, copied)?;
         } else if kind.is_symlink() {
             let target = fs::read_link(&src)?;
             if dst.symlink_metadata().is_ok() {
                 dst = free_name(&dst);
             }
             std::os::unix::fs::symlink(target, dst)?;
+            copied.fetch_add(1, Ordering::Relaxed);
         } else {
             if dst.symlink_metadata().is_ok() {
                 dst = free_name(&dst);
             }
             fs::copy(&src, &dst)?;
+            copied.fetch_add(1, Ordering::Relaxed);
         }
     }
     Ok(())
@@ -139,11 +143,13 @@ mod tests {
         fs::write(from.join("a.txt"), "local").unwrap();
         fs::write(from.join("sub/b.txt"), "local b").unwrap();
         fs::write(to.join("a.txt"), "cloud").unwrap();
-        merge_into(&from, &to).unwrap();
+        let n = AtomicUsize::new(0);
+        merge_into(&from, &to, &n).unwrap();
+        assert_eq!(n.load(Ordering::Relaxed), 2, "two files copied");
         assert_eq!(fs::read_to_string(to.join("a.txt")).unwrap(), "cloud");
         assert_eq!(fs::read_to_string(to.join("a (this device).txt")).unwrap(), "local");
         assert_eq!(fs::read_to_string(to.join("sub/b.txt")).unwrap(), "local b");
-        merge_into(&from, &to).unwrap();
+        merge_into(&from, &to, &n).unwrap();
         assert_eq!(fs::read_to_string(to.join("a (this device 2).txt")).unwrap(), "local");
         let _ = (fs::remove_dir_all(from), fs::remove_dir_all(to));
     }
@@ -159,10 +165,10 @@ mod tests {
         let backup = link(&home, &mount, &root.join("backups")).unwrap();
         assert!(is_linked(&home, &mount));
         assert_eq!(fs::read_to_string(backup.join("note.txt")).unwrap(), "hello");
-        merge_into(&backup, &cloud_path(&mount, &home)).unwrap();
+        merge_into(&backup, &cloud_path(&mount, &home), &AtomicUsize::new(0)).unwrap();
         assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hello"); // through the link
 
-        unlink(&home, &mount).unwrap();
+        unlink(&home, &mount, &AtomicUsize::new(0)).unwrap();
         assert!(!fs::symlink_metadata(&home).unwrap().file_type().is_symlink());
         assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hello");
         assert!(mount.join("Documents/note.txt").exists(), "cloud copy is kept");

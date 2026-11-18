@@ -47,6 +47,9 @@ Moving never deletes anything:
 3. The files are copied into the cloud folder. A name that already exists there is kept
    side by side as ``name (this device).ext``.
 
+While a folder is being moved, its row shows a spinner and how many files have been copied
+so far; it cannot be started again until it finishes.
+
 Delete the backup yourself once you have checked the cloud copy. **Move Back** downloads a
 copy of the cloud folder and puts a real folder back in ``~``; the cloud copy is kept.
 
