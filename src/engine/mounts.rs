@@ -24,6 +24,33 @@ pub enum MountState {
     Failed(String),
 }
 
+/// GNOME Files' "Move to Trash" on a FUSE drive moves files into `.Trash-<uid>` inside the
+/// drive: a slow server-side move plus an uploaded `.trashinfo` per item, and the files stay
+/// in the cloud using quota (issue #14). A plain file at that name makes GIO find no trash, so
+/// GNOME Files deletes instead (one call), and the cloud keeps deleted files in its own trash.
+/// Runs through the live mount: call it off the main thread.
+///
+/// A trash folder made before is kept, renamed to "Trashed in GNOME Files", for the user to
+/// review: nothing in it is deleted.
+pub fn block_gnome_trash(mount: &Path) -> std::io::Result<()> {
+    // SAFETY: getuid cannot fail and touches no memory.
+    let trash = mount.join(format!(".Trash-{}", unsafe { libc::getuid() }));
+    match std::fs::symlink_metadata(&trash) {
+        Ok(m) if !m.is_dir() => return Ok(()), // already blocked
+        Ok(_) => {
+            let kept = (1..)
+                .map(|n| mount.join(if n == 1 { "Trashed in GNOME Files".to_owned() } else { format!("Trashed in GNOME Files {n}") }))
+                .find(|p| p.symlink_metadata().is_err())
+                .expect("a free name exists");
+            std::fs::rename(&trash, &kept)?;
+            eprintln!("nuvolo: moved GNOME Files' trash in the drive to {}", kept.display());
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        Err(_) => {}
+    }
+    std::fs::write(&trash, b"")
+}
+
 /// What the system knows about the network. False means no network at all (cable out,
 /// Wi-Fi off); true does not promise the internet is reachable.
 pub fn online() -> bool {
@@ -98,6 +125,12 @@ impl Engine {
                 if self.mount_errors.remove(&remote).is_some() {
                     notify::withdraw(&id);
                 }
+                let mount = self.cfg.accounts[i].mount.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = block_gnome_trash(&mount) {
+                        eprintln!("nuvolo: {}: could not turn off GNOME Files' trash: {e}", mount.display());
+                    }
+                });
                 self.sync_offline(i);
             }
             Err(e) => {
@@ -173,5 +206,25 @@ impl Engine {
     /// The account whose mount holds `abs`, if that mount is up.
     pub fn mounted_account(&self, abs: &Path) -> Option<usize> {
         self.locate(abs).map(|(i, _)| i).filter(|&i| self.is_mounted(i))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gnome_trash_is_blocked_and_an_old_one_kept() {
+        let d = std::env::temp_dir().join(format!("nuvolo-trash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let trash = d.join(format!(".Trash-{}", unsafe { libc::getuid() }));
+        std::fs::create_dir_all(trash.join("files")).unwrap();
+        std::fs::write(trash.join("files/old.pdf"), "kept").unwrap();
+        block_gnome_trash(&d).unwrap();
+        assert!(trash.is_file(), "a placeholder file now blocks the trash");
+        assert_eq!(std::fs::read_to_string(d.join("Trashed in GNOME Files/files/old.pdf")).unwrap(), "kept");
+        block_gnome_trash(&d).unwrap(); // again: nothing changes
+        assert!(!d.join("Trashed in GNOME Files 2").exists());
+        let _ = std::fs::remove_dir_all(d);
     }
 }

@@ -92,6 +92,17 @@ Before moving anything,
 it checks that the mount really is up (a different device), so it never copies a folder
 onto itself.
 
+GNOME Files' trash
+------------------
+
+GIO trashes files on a mount into ``<mount>/.Trash-<uid>`` when it can create that folder.
+On a cloud drive that is a server-side move and an uploaded ``.trashinfo`` per item, and the
+files stay in the cloud. ``x-gvfs-notrash`` would turn that off, but rclone's mount helper
+drops ``x-`` options, so GIO never sees it. After each mount, Nuvolo instead puts an empty
+file at ``.Trash-<uid>`` (``block_gnome_trash`` in ``engine/mounts.rs``); GIO then reports
+``access::can-trash`` false and GNOME Files deletes directly. An existing trash folder is
+renamed to ``Trashed in GNOME Files``, never deleted.
+
 File states
 -----------
 

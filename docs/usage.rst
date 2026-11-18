@@ -207,6 +207,21 @@ other rclone user. Nuvolo shows a banner when that is the case. Create a *Deskto
 OAuth client in Google Cloud Console, enter it with **Use Custom Client ID**, then use
 **Reconnect Account** in Preferences.
 
+Deleting files
+--------------
+
+In a Nuvolo drive, GNOME Files deletes files right away instead of moving them to its trash,
+and asks you first. The file still goes to the cloud's own trash (for Google Drive, the Bin
+on drive.google.com, for 30 days), so you can restore it from there.
+
+That is because GNOME's trash does not work well on cloud drives: it moves each file into a
+hidden ``.Trash-1000`` folder inside the drive, which is slow, and the files stay in the cloud
+using space. Nuvolo prevents it with an empty file named ``.Trash-<your user id>`` in the
+drive's root; leave that file in place. If an older version left such a trash folder, Nuvolo
+renames it to **Trashed in GNOME Files**, so you can review it and delete it yourself.
+
+Deleting a folder with many files still takes one request per file, so it can take a while.
+
 Help
 ----
 
