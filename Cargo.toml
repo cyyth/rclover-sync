@@ -1,0 +1,22 @@
+[package]
+name = "nuvolo-sync"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.84"
+license = "GPL-3.0-or-later"
+description = "GNOME cloud-drive manager: on-demand rclone mounts with selective offline folders"
+repository = "https://github.com/cyythanapong-netizen/nuvolo-sync"
+resolver = "3"
+
+[[bin]]
+name = "nuvolo"
+path = "src/main.rs"
+
+[dependencies]
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+ureq = { version = "2", default-features = false, features = ["json"] }
