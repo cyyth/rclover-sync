@@ -82,6 +82,13 @@ impl Rcd {
     }
 }
 
+impl Rcd {
+    /// False once the rclone process has exited.
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
 impl Drop for Rcd {
     fn drop(&mut self) {
         let _ = self.client.call("mount/unmountall", json!({}));
@@ -102,7 +109,23 @@ fn random_token() -> io::Result<String> {
 }
 
 /// Mounts an account with a full VFS cache. Ignore patterns and excluded folders become filter rules.
+/// True if `p` is a FUSE mount whose server is gone ("Transport endpoint is not connected").
+pub fn is_dead_mount(p: &Path) -> bool {
+    matches!(std::fs::metadata(p), Err(e) if e.raw_os_error() == Some(libc::ENOTCONN))
+}
+
+/// Detaches a mount point. Only for mounts no live rclone serves: when a live rclone later
+/// releases a lazily detached mount, its cleanup unmounts whatever is mounted there then.
+pub fn lazy_unmount(p: &Path) -> bool {
+    Command::new("fusermount3").arg("-uz").arg(p).status().is_ok_and(|s| s.success())
+}
+
 pub fn mount(c: &Client, cfg: &Config, a: &Account) -> Result<(), String> {
+    // A dead mount left by a crashed or killed rclone blocks both mkdir and mounting.
+    if is_dead_mount(&a.mount) {
+        eprintln!("nuvolo: clearing dead mount at {}", a.mount.display());
+        lazy_unmount(&a.mount);
+    }
     std::fs::create_dir_all(&a.mount).map_err(|e| format!("{}: {e}", a.mount.display()))?;
     let mut excludes = cfg.ignore.clone();
     excludes.extend(a.modes.iter().filter(|(_, m)| **m == Mode::Excluded).map(|(p, _)| format!("/{p}/**")));
@@ -119,14 +142,7 @@ pub fn mount(c: &Client, cfg: &Config, a: &Account) -> Result<(), String> {
         "mountOpt": { "VolumeName": a.remote },
         "_filter": { "ExcludeRule": excludes },
     });
-    c.call("mount/mount", params.clone()).map(|_| ()).or_else(|first| {
-        // A previous crash can leave a dead FUSE mount behind ("transport endpoint is not connected").
-        let lazy = Command::new("fusermount3").arg("-uz").arg(&a.mount).status();
-        if !matches!(lazy, Ok(s) if s.success()) {
-            return Err(first);
-        }
-        c.call("mount/mount", params).map(|_| ())
-    })
+    c.call("mount/mount", params).map(|_| ())
 }
 
 pub fn public_link(c: &Client, remote: &str, rel: &str) -> Result<String, String> {
