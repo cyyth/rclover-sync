@@ -2,7 +2,7 @@
 Name=Nuvolo
 Comment=Mount cloud drives on demand and keep chosen folders offline
 Exec=nuvolo
-Icon=folder-remote
+Icon=io.github.cyythanapong_netizen.Nuvolo
 Terminal=false
 Type=Application
 Categories=GTK;GNOME;Utility;FileTools;

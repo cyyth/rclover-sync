@@ -1,0 +1,41 @@
+name: RPM
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  rpm:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y git rpm-build make cargo rust gtk4-devel libadwaita-devel
+
+      - uses: actions/checkout@v4
+
+      - name: Build RPM
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          version=$(rpmspec -q --srpm --qf '%{version}' nuvolo.spec)
+          name=$(rpmspec -q --srpm --qf '%{name}' nuvolo.spec)
+          mkdir -p ~/rpmbuild/SOURCES dist
+          git archive --format=tar.gz --prefix=nuvolo-sync-$version/ -o ~/rpmbuild/SOURCES/$name-$version.tar.gz HEAD
+          rpmbuild -ba nuvolo.spec
+          cp ~/rpmbuild/RPMS/*/*.rpm ~/rpmbuild/SRPMS/*.rpm dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpms
+          path: dist/*.rpm
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.rpm

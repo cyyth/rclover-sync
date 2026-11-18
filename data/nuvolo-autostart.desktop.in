@@ -2,7 +2,7 @@
 Name=Nuvolo
 Comment=Mount cloud drives at login
 Exec=@bindir@/nuvolo --gapplication-service
-Icon=folder-remote
+Icon=io.github.cyythanapong_netizen.Nuvolo
 Type=Application
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
