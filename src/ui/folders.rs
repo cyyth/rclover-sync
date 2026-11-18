@@ -85,6 +85,7 @@ impl Ui {
                     return;
                 }
                 let res = ui.e.borrow_mut().set_mode(ui.acct.get(), &name, m);
+                ui.rebuild_home(); // the Home Folders rows show each folder's mode
                 row.set_subtitle(mode_label(m));
                 match res {
                     Ok(()) if m == Mode::Pinned => ui.toast(&format!("Downloading “{name}” to keep it offline")),

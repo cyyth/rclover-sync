@@ -18,6 +18,7 @@ Example
    no_modtime = true
    ignore = ["node_modules/**", "target/**", "_deps/**", "*.tmp", ".~lock.*#"]
    rc_port = 5572
+   conflicts = "keep-both"
 
    [[accounts]]
    remote = "gdrive"
@@ -35,7 +36,8 @@ Keys
    rclone's ``--transfers`` and ``--checkers``. Applied immediately.
 
 ``cache_max_size_gib``, ``cache_max_age_hours``
-   Limits for the VFS cache. Applied on the next remount.
+   Limits for the on-demand cache (rclone's VFS cache): the space for opened files, on top of
+   Offline folders, which do not count against it. Applied on the next remount.
 
 ``no_modtime``
    Passes ``--no-modtime`` to the mount, which saves API calls on large trees.
@@ -45,6 +47,11 @@ Keys
 
 ``rc_port``
    Port for the private ``rclone rcd`` instance on 127.0.0.1.
+
+``conflicts``
+   What offline copies do with a file changed both on this device and in the cloud:
+   ``keep-both`` (default), ``newer``, ``this-device`` or ``cloud``. See
+   :ref:`conflicts` in the usage guide.
 
 ``accounts.modes``
    Folder paths relative to the remote root, each mapped to ``on-demand``, ``pinned``

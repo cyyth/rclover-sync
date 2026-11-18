@@ -7,10 +7,12 @@
 //! - [`transfers`]: running and finished transfers.
 //! - [`prefs`]: preferences, OAuth, reconnect, ignore patterns.
 //! - [`home`]: the Home Folders rows inside Preferences.
+//! - [`help`]: the Help dialog (GNOME Files icons, conflicts).
 //! - [`widgets`]: small widget helpers shared by the pages.
 
 mod accounts;
 mod folders;
+mod help;
 mod home;
 mod overview;
 mod prefs;
@@ -121,6 +123,7 @@ impl Ui {
         header.set_title_widget(Some(&title));
         let menu = gio::Menu::new();
         menu.append(Some("Add Cloud Account…"), Some("app.add-account"));
+        menu.append(Some("Help"), Some("app.help"));
         menu.append(Some("About Nuvolo"), Some("app.about"));
         menu.append(Some("Quit"), Some("app.quit"));
         header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Main Menu").build());
@@ -131,6 +134,9 @@ impl Ui {
             sm.set_color_scheme(if sm.is_dark() { adw::ColorScheme::ForceLight } else { adw::ColorScheme::ForceDark });
         });
         header.pack_end(&theme_btn);
+        let help_btn = gtk::Button::builder().icon_name("help-browser-symbolic").tooltip_text("Help: icons in GNOME Files, conflicts").action_name("app.help").build();
+        help_btn.add_css_class("flat");
+        header.pack_end(&help_btn);
         let banner = adw::Banner::new("This account uses rclone's shared OAuth client, so API quota is shared and transfers may be throttled.");
         banner.set_button_label(Some("Use Custom Client ID"));
         let stack = adw::ViewStack::new();

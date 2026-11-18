@@ -38,6 +38,8 @@ const CSS: &str = "
 .pill-badge.warning { background: alpha(@warning_color, 0.15); color: @warning_color; }
 .pill-badge.error { background: alpha(@error_color, 0.15); color: @error_color; }
 .stat { padding: 14px 16px; }
+progressbar.storage-pinned > trough > progress { background-color: @blue_3; border-color: @blue_3; }
+progressbar.storage-cache > trough > progress { background-color: @green_4; border-color: @green_4; }
 ";
 
 fn main() -> glib::ExitCode {
@@ -101,6 +103,10 @@ fn add_actions(app: &adw::Application, e: &Shared) {
     let about = gio::ActionEntry::builder("about")
         .activate(move |app: &adw::Application, _, _| ui::present(app, &e3).about())
         .build();
+    let e5 = e.clone();
+    let help = gio::ActionEntry::builder("help")
+        .activate(move |app: &adw::Application, _, _| ui::present(app, &e5).help())
+        .build();
     let e4 = e.clone();
     let show = gio::ActionEntry::builder("show-page")
         .parameter_type(Some(glib::VariantTy::STRING))
@@ -109,8 +115,9 @@ fn add_actions(app: &adw::Application, e: &Shared) {
             ui::present(app, &e4).show_page(&page);
         })
         .build();
-    app.add_action_entries([quit, add, about, show]);
+    app.add_action_entries([quit, add, about, help, show]);
     app.set_accels_for_action("app.quit", &["<Control>q"]);
+    app.set_accels_for_action("app.help", &["F1"]);
 }
 
 fn start_tray(app: &adw::Application, e: &Shared) -> Option<tray::Handle> {

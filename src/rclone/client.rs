@@ -26,9 +26,36 @@ impl Client {
             Err(ureq::Error::Status(_, r)) => Err(r
                 .into_json::<Value>()
                 .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_owned))
+                .and_then(|v| v["error"].as_str().map(strip_ansi))
                 .unwrap_or_else(|| format!("{method} failed"))),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+/// Removes terminal colour codes ("\x1b[31m"), which rclone puts in some error texts.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip "[", parameters, and the final letter.
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn strips_colour_codes() {
+        assert_eq!(super::strip_ansi("\x1b[31mprior lock\x1b[0m found"), "prior lock found");
     }
 }
