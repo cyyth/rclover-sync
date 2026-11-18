@@ -5,6 +5,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::path::Path;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -42,15 +43,26 @@ impl Rcd {
     /// so it never shows up in `ps`).
     pub fn spawn(port: u16, cache_dir: &Path) -> io::Result<Rcd> {
         let pass = random_token()?;
-        let child = Command::new("rclone")
+        let mut cmd = Command::new("rclone");
+        cmd
             .arg("rcd")
             .arg("--rc-user=nuvolo")
             .arg(format!("--rc-addr=127.0.0.1:{port}"))
             .arg(format!("--cache-dir={}", cache_dir.display()))
             .env("RCLONE_RC_PASS", &pass)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()?;
+            .stdout(Stdio::null());
+        // If Nuvolo dies, take rclone with it, so a crash never leaves the port taken.
+        // SAFETY: prctl is async-signal-safe and touches no Rust state.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = cmd.spawn()?;
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("nuvolo:{pass}"));
         let mut rcd = Rcd {
             child,

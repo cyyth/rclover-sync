@@ -18,16 +18,12 @@ install:
 	install -d $(DESTDIR)$(DATADIR)/dbus-1/services
 	sed 's|@bindir@|$(BINDIR)|' data/$(APP_ID).service.in > $(DESTDIR)$(DATADIR)/dbus-1/services/$(APP_ID).service
 
-autostart:
-	install -d $(HOME)/.config/autostart
-	sed 's|@bindir@|$(BINDIR)|' data/nuvolo-autostart.desktop.in > $(HOME)/.config/autostart/nuvolo.desktop
-
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/nuvolo $(DESTDIR)$(DATADIR)/applications/$(APP_ID).desktop \
-	      $(DESTDIR)$(DATADIR)/dbus-1/services/$(APP_ID).service $(HOME)/.config/autostart/nuvolo.desktop
+	      $(DESTDIR)$(DATADIR)/dbus-1/services/$(APP_ID).service
 	for i in $(ICONS); do rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/$$i; done
 
 docs:
 	sphinx-build -W -b html docs docs/_build/html
 
-.PHONY: build test install autostart uninstall docs
+.PHONY: build test install uninstall docs

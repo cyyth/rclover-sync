@@ -16,6 +16,10 @@ Engine (``src/engine.rs``)
 D-Bus service (``src/dbus.rs``)
    Exposes file states and actions to the GNOME Files extension. See :doc:`dbus`.
 
+Tray (``src/tray.rs``)
+   A StatusNotifierItem served by ``ksni`` on its own thread. Menu clicks are sent back to
+   the GTK main thread over a channel.
+
 Window (``src/ui.rs``)
    A Libadwaita window: account sidebar, Overview, Folders, Transfers and Preferences.
    Closing the window keeps Nuvolo running, so the mounts stay up. Quit from the menu or
@@ -26,8 +30,11 @@ Mounts
 
 Each account is mounted with ``--vfs-cache-mode full`` and a 5-second write-back delay.
 Ignore patterns and excluded folders become ``--exclude`` rules on the mount, which is
-why changing them needs a remount. Nuvolo refuses to remount while uploads are still
-pending.
+why changing them needs a remount. While uploads are pending, Nuvolo postpones the remount
+and retries every second. If the mount is busy (for example, open in GNOME Files), it is
+detached lazily, so programs that hold it open keep the old view until they let go.
+
+rclone runs with a parent-death signal, so it exits whenever Nuvolo does, even after a crash.
 
 File states
 -----------

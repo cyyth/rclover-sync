@@ -31,6 +31,15 @@ pub fn present(app: &adw::Application, e: &Shared) -> Rc<Ui> {
     ui
 }
 
+impl Ui {
+    /// Switches the window to one of the sidebar pages ("overview", "prefs", ...).
+    pub fn show_page(&self, id: &str) {
+        if let Some(i) = PAGES.iter().position(|p| p.0 == id) {
+            self.nav.select_row(self.nav.row_at_index(i as i32).as_ref());
+        }
+    }
+}
+
 /// Called every second by the engine tick.
 pub fn refresh() {
     if let Some(ui) = UI.with(|u| u.borrow().clone()) {
@@ -108,8 +117,9 @@ fn boxed() -> gtk::ListBox {
 }
 
 fn group(title: &str, desc: Option<&str>) -> adw::PreferencesGroup {
-    let g = adw::PreferencesGroup::builder().title(title).build();
-    g.set_description(desc);
+    // Group titles and descriptions are markup: escape "&" and friends.
+    let g = adw::PreferencesGroup::builder().title(glib::markup_escape_text(title).as_str()).build();
+    g.set_description(desc.map(|d| glib::markup_escape_text(d)).as_deref());
     g
 }
 
@@ -365,6 +375,21 @@ impl Ui {
         let cfg = self.e.borrow().cfg.clone();
         let page = adw::PreferencesPage::new();
 
+        let g = group("General", None);
+        let login = adw::SwitchRow::builder()
+            .title("Start at Login")
+            .subtitle("Mount your drives in the background when you log in")
+            .active(autostart_file().exists())
+            .build();
+        let ui = self.clone();
+        login.connect_active_notify(move |r| {
+            if let Err(e) = set_autostart(r.is_active()) {
+                ui.toast(&format!("Could not change login startup: {e}"));
+            }
+        });
+        g.add(&login);
+        page.add(&g);
+
         let g = group("Performance & API Limits", Some("Transfers and checkers apply immediately; cache settings apply after a remount."));
         let spin = |title: &str, sub: &str, max: f64, value: u32| {
             let r = adw::SpinRow::with_range(1.0, max, 1.0);
@@ -534,11 +559,11 @@ impl Ui {
     }
 
     fn toast(&self, msg: &str) {
-        self.toasts.add_toast(adw::Toast::new(msg));
+        self.toasts.add_toast(adw::Toast::new(&glib::markup_escape_text(msg)));
     }
 
     fn toast_remount(self: &Rc<Self>, msg: &str) {
-        let t = adw::Toast::builder().title(msg).button_label("Remount Now").build();
+        let t = adw::Toast::builder().title(glib::markup_escape_text(msg).as_str()).button_label("Remount Now").build();
         let ui = self.clone();
         t.connect_button_clicked(move |_| {
             let n = ui.e.borrow().cfg.accounts.len();
@@ -635,7 +660,7 @@ impl Ui {
     }
 
     fn folder_row(self: &Rc<Self>, name: &str) -> adw::ActionRow {
-        let mode = self.e.borrow().cfg.accounts[self.acct.get()].mode_of(name);
+        let mode = self.e.borrow().cfg.accounts.get(self.acct.get()).map_or(Mode::OnDemand, |a| a.mode_of(name));
         let row = adw::ActionRow::builder().title(glib::markup_escape_text(name).as_str()).subtitle(mode_label(mode)).build();
         row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
         let linked = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -861,4 +886,29 @@ fn done_row(t: &Value) -> adw::ActionRow {
         .build();
     row.add_suffix(&if err.is_empty() { pill("Done", "success") } else { pill("Error", "error") });
     row
+}
+
+fn autostart_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("autostart").join(format!("{}.desktop", crate::APP_ID))
+}
+
+/// Adds or removes an XDG autostart entry that starts Nuvolo as a background service.
+fn set_autostart(on: bool) -> std::io::Result<()> {
+    let path = autostart_file();
+    if !on {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    let exe = std::env::current_exe()?;
+    std::fs::create_dir_all(path.parent().expect("autostart dir"))?;
+    std::fs::write(
+        &path,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Nuvolo\nComment=Mount cloud drives at login\nExec={} --gapplication-service\nIcon={}\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
+            exe.display(),
+            crate::APP_ID
+        ),
+    )
 }

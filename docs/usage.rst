@@ -28,7 +28,19 @@ Excluded
    ``node_modules``, build output and similar folders.
 
 A mode applies to the folder and everything inside it, unless a subfolder sets its own.
+Excluding a folder remounts the drive to hide it. If uploads are still pending, Nuvolo waits
+for them to finish first.
 Turning off **On-Demand Streaming** on the Overview page pins the whole drive.
+
+Start at login and the top bar
+------------------------------
+
+Turn on **Start at Login** in Preferences to mount your drives in the background when you
+log in. No window opens; closing the window also keeps Nuvolo running.
+
+Nuvolo shows a clover in the top bar with the current status and a menu to pause, open the
+window or quit. GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension
+for that (``gnome-shell-extension-appindicator`` on Fedora).
 
 Pausing
 -------

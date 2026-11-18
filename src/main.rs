@@ -2,6 +2,7 @@ mod config;
 mod dbus;
 mod engine;
 mod rclone;
+mod tray;
 mod ui;
 
 use adw::prelude::*;
@@ -55,13 +56,44 @@ fn startup(app: &adw::Application) {
     app.add_action_entries([quit, add]);
     app.set_accels_for_action("app.quit", &["<Control>q"]);
 
+    let (tray, tray_rx) = tray::spawn();
+    let (app2, e5) = (app.clone(), e.clone());
+    glib::spawn_future_local(async move {
+        while let Ok(cmd) = tray_rx.recv().await {
+            match cmd {
+                tray::Cmd::Open => {
+                    ui::present(&app2, &e5).show_page("overview");
+                }
+                tray::Cmd::Preferences => ui::present(&app2, &e5).show_page("prefs"),
+                tray::Cmd::TogglePause => {
+                    let on = !e5.borrow().paused;
+                    if let Err(err) = e5.borrow_mut().set_paused(on) {
+                        eprintln!("nuvolo: pause: {err}");
+                    }
+                }
+                tray::Cmd::Quit => app2.quit(),
+            }
+        }
+    });
+
     let e3 = e.clone();
+    let mut last_status = String::new();
     glib::timeout_add_seconds_local(1, move || {
         let changed = e3.borrow_mut().tick();
         if let Some(conn) = &conn {
             dbus::emit_changed(conn, &changed);
         }
         ui::refresh();
+        if let Some(tray) = &tray {
+            let (status, paused) = tray_status(&e3.borrow());
+            if status != last_status {
+                last_status = status.clone();
+                tray.update(move |t| {
+                    t.status = status;
+                    t.paused = paused;
+                });
+            }
+        }
         glib::ControlFlow::Continue
     });
 
@@ -70,4 +102,19 @@ fn startup(app: &adw::Application) {
         ui::present(app, &e4);
     });
     app.connect_shutdown(move |_| e.borrow_mut().shutdown());
+}
+
+/// One-line status for the tray menu and tooltip.
+fn tray_status(e: &engine::Engine) -> (String, bool) {
+    let active = e.core["transferring"].as_array().map_or(0, Vec::len);
+    let status = if e.paused {
+        "Paused".to_owned()
+    } else if !e.mount_errors.is_empty() {
+        format!("{} account(s) not mounted", e.mount_errors.len())
+    } else if active > 0 {
+        format!("Syncing {active} file(s)")
+    } else {
+        "Up to date".to_owned()
+    };
+    (status, e.paused)
 }

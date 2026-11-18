@@ -51,6 +51,8 @@ pub struct Engine {
     last_count: Option<u64>,
     syncing: HashSet<PathBuf>,
     errors: HashSet<PathBuf>,
+    /// Accounts whose remount was deferred because uploads were pending.
+    remount_later: HashSet<usize>,
     ticks: u64,
 }
 
@@ -73,6 +75,7 @@ impl Engine {
             last_count: None,
             syncing: HashSet::new(),
             errors: HashSet::new(),
+            remount_later: HashSet::new(),
             ticks: 0,
         };
         e.apply_options();
@@ -102,7 +105,7 @@ impl Engine {
     }
 
     pub fn mount(&mut self, i: usize) {
-        let a = &self.cfg.accounts[i];
+        let Some(a) = self.cfg.accounts.get(i) else { return };
         let res = rclone::mount(&self.client, &self.cfg, a);
         let remote = a.remote.clone();
         match res {
@@ -118,14 +121,20 @@ impl Engine {
         })
     }
 
-    /// Remounts to apply filter or cache settings. Refuses while uploads are pending.
+    /// Remounts to apply filter or cache settings. While uploads are pending it waits and
+    /// retries from `tick`, so queued writes are never cut off.
     pub fn remount(&mut self, i: usize) -> Result<(), String> {
-        let a = &self.cfg.accounts[i];
+        let a = self.cfg.accounts.get(i).ok_or("no such account")?;
         let pending = self.pending_uploads(&a.remote);
         if pending > 0 {
-            return Err(format!("{pending} uploads pending, try again when they finish"));
+            self.remount_later.insert(i);
+            return Err(format!("{pending} uploads pending; it will apply when they finish"));
         }
-        let _ = self.client.call("mount/unmount", json!({ "mountPoint": a.mount }));
+        self.remount_later.remove(&i);
+        if self.client.call("mount/unmount", json!({ "mountPoint": a.mount })).is_err() {
+            // Busy (e.g. open in Files): detach lazily; open handles keep the old view.
+            let _ = std::process::Command::new("fusermount3").arg("-uz").arg(&a.mount).status();
+        }
         self.mount(i);
         match self.mount_errors.get(&self.cfg.accounts[i].remote) {
             Some(e) => Err(e.clone()),
@@ -175,6 +184,9 @@ impl Engine {
         self.syncing = now;
         if self.ticks % 3600 == 0 {
             self.refresh_pins();
+        }
+        for i in self.remount_later.clone() {
+            let _ = self.remount(i);
         }
         changed
     }
@@ -245,7 +257,7 @@ impl Engine {
 
     pub fn set_mode(&mut self, i: usize, rel: &str, mode: Mode) -> Result<(), String> {
         let rel = rel.trim_matches('/').to_owned();
-        let a = &mut self.cfg.accounts[i];
+        let a = self.cfg.accounts.get_mut(i).ok_or("add a cloud account first")?;
         let touches_filter = mode == Mode::Excluded || a.modes.get(&rel) == Some(&Mode::Excluded);
         if mode == Mode::OnDemand && rel.is_empty() {
             a.modes.remove("");
