@@ -1,13 +1,32 @@
+//! Nuvolo: cloud drives on demand for GNOME, powered by rclone.
+//!
+//! This file only wires the parts together. Where to look:
+//!
+//! - [`engine`]: the sync policy and all state (mounts, offline copies, pins, file states).
+//! - [`rclone`]: everything that talks to rclone (daemon, API client, mount, bisync, links).
+//! - [`homedirs`]: moving Documents, Music, ... into the cloud and back.
+//! - [`ui`]: the window, one file per page.
+//! - [`dbus`]: the interface for the GNOME Files extension (contract: docs/dbus.rst).
+//! - [`tray`]: the top-bar icon.
+//! - [`notify`]: desktop notifications, in bulk.
+//! - [`errors`]: what an error means and what to do about it.
+//! - [`config`]: the settings file.
+
 mod config;
 mod dbus;
 mod engine;
+mod errors;
 mod homedirs;
+mod notify;
 mod rclone;
 mod tray;
 mod ui;
 
 use adw::prelude::*;
+use engine::Shared;
 use gtk::{gio, glib};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 pub const APP_ID: &str = "io.github.cyythanapong_netizen.Nuvolo";
 pub const REPO_URL: &str = "https://github.com/cyythanapong-netizen/nuvolo-sync";
@@ -38,10 +57,12 @@ fn startup(app: &adw::Application) {
         Ok(e) => e,
         Err(err) => {
             eprintln!("nuvolo: {err}");
+            let err = errors::explain(&err);
             app.connect_activate(move |app| ui::fatal(app, &err));
             return;
         }
     };
+    homedirs::adopt_old_moves(&homedirs::jobs_root(), &homedirs::backup_root());
 
     // Mounts must outlive the window: keep running until Quit.
     std::mem::forget(app.hold());
@@ -50,59 +71,18 @@ fn startup(app: &adw::Application) {
     if let Some(conn) = &conn {
         dbus::export(conn, e.clone());
     }
+    add_actions(app, &e);
+    let tray = start_tray(app, &e);
 
-    let quit = gio::ActionEntry::builder("quit").activate(|app: &adw::Application, _, _| app.quit()).build();
+    // Mount right away when the network comes back, instead of waiting for the next retry.
     let e2 = e.clone();
-    let add = gio::ActionEntry::builder("add-account")
-        .activate(move |app: &adw::Application, _, _| ui::present(app, &e2).add_account())
-        .build();
-    let e6 = e.clone();
-    let about = gio::ActionEntry::builder("about")
-        .activate(move |app: &adw::Application, _, _| ui::present(app, &e6).about())
-        .build();
-    app.add_action_entries([quit, add, about]);
-    app.set_accels_for_action("app.quit", &["<Control>q"]);
-
-    let (tray, tray_rx) = tray::spawn();
-    let (app2, e5) = (app.clone(), e.clone());
-    glib::spawn_future_local(async move {
-        while let Ok(cmd) = tray_rx.recv().await {
-            match cmd {
-                tray::Cmd::Open => {
-                    ui::present(&app2, &e5).show_page("overview");
-                }
-                tray::Cmd::Preferences => ui::present(&app2, &e5).show_page("prefs"),
-                tray::Cmd::TogglePause => {
-                    let on = !e5.borrow().paused;
-                    if let Err(err) = e5.borrow_mut().set_paused(on) {
-                        eprintln!("nuvolo: pause: {err}");
-                    }
-                }
-                tray::Cmd::Quit => app2.quit(),
-            }
+    gio::NetworkMonitor::default().connect_network_changed(move |_, available| {
+        if available {
+            e2.borrow_mut().retry_mounts();
         }
     });
 
-    let e3 = e.clone();
-    let mut last_status = String::new();
-    glib::timeout_add_seconds_local(1, move || {
-        let changed = e3.borrow_mut().tick();
-        if let Some(conn) = &conn {
-            dbus::emit_changed(conn, &changed);
-        }
-        ui::refresh();
-        if let Some(tray) = &tray {
-            let (status, paused) = tray_status(&e3.borrow());
-            if status != last_status {
-                last_status = status.clone();
-                tray.update(move |t| {
-                    t.status = status;
-                    t.paused = paused;
-                });
-            }
-        }
-        glib::ControlFlow::Continue
-    });
+    start_ticking(&e, conn, tray);
 
     let e4 = e.clone();
     app.connect_activate(move |app| {
@@ -111,17 +91,90 @@ fn startup(app: &adw::Application) {
     app.connect_shutdown(move |_| e.borrow_mut().shutdown());
 }
 
-/// One-line status for the tray menu and tooltip.
-fn tray_status(e: &engine::Engine) -> (String, bool) {
-    let active = e.core["transferring"].as_array().map_or(0, Vec::len);
-    let status = if e.paused {
-        "Paused".to_owned()
-    } else if !e.mount_errors.is_empty() {
-        format!("{} account(s) not mounted", e.mount_errors.len())
-    } else if active > 0 {
-        format!("Syncing {active} file(s)")
-    } else {
-        "Up to date".to_owned()
-    };
-    (status, e.paused)
+fn add_actions(app: &adw::Application, e: &Shared) {
+    let quit = gio::ActionEntry::builder("quit").activate(|app: &adw::Application, _, _| app.quit()).build();
+    let e2 = e.clone();
+    let add = gio::ActionEntry::builder("add-account")
+        .activate(move |app: &adw::Application, _, _| ui::present(app, &e2).add_account())
+        .build();
+    let e3 = e.clone();
+    let about = gio::ActionEntry::builder("about")
+        .activate(move |app: &adw::Application, _, _| ui::present(app, &e3).about())
+        .build();
+    let e4 = e.clone();
+    let show = gio::ActionEntry::builder("show-page")
+        .parameter_type(Some(glib::VariantTy::STRING))
+        .activate(move |app: &adw::Application, _, p| {
+            let page = p.and_then(|p| p.get::<String>()).unwrap_or_default();
+            ui::present(app, &e4).show_page(&page);
+        })
+        .build();
+    app.add_action_entries([quit, add, about, show]);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
+}
+
+fn start_tray(app: &adw::Application, e: &Shared) -> Option<tray::Handle> {
+    let (tray, rx) = tray::spawn();
+    let (app, e) = (app.clone(), e.clone());
+    glib::spawn_future_local(async move {
+        while let Ok(cmd) = rx.recv().await {
+            match cmd {
+                tray::Cmd::Open => ui::present(&app, &e).show_page("overview"),
+                tray::Cmd::RetryMounts => e.borrow_mut().retry_mounts(),
+                tray::Cmd::Preferences => ui::present(&app, &e).show_page("prefs"),
+                tray::Cmd::TogglePause => {
+                    let on = !e.borrow().paused;
+                    if let Err(err) = e.borrow_mut().set_paused(on) {
+                        eprintln!("nuvolo: pause: {err}");
+                    }
+                }
+                tray::Cmd::Quit => app.quit(),
+            }
+        }
+    });
+    tray
+}
+
+/// Every second: poll rclone off the main thread, then update everything with the result.
+/// A poll that is still running (rclone busy) makes the next ones wait instead of piling up.
+fn start_ticking(e: &Shared, conn: Option<gio::DBusConnection>, tray: Option<tray::Handle>) {
+    let e = e.clone();
+    let busy = Rc::new(Cell::new(false));
+    let last_status = Rc::new(RefCell::new(String::new()));
+    let errors = Rc::new(RefCell::new(notify::ErrorNotice::default()));
+    glib::timeout_add_seconds_local(1, move || {
+        if busy.replace(true) {
+            return glib::ControlFlow::Continue;
+        }
+        let job = e.borrow_mut().poll_job();
+        let (e, busy, conn, tray, last_status, errors) = (e.clone(), busy.clone(), conn.clone(), tray.clone(), last_status.clone(), errors.clone());
+        glib::spawn_future_local(async move {
+            let Ok(poll) = gio::spawn_blocking(job).await else {
+                busy.set(false);
+                return;
+            };
+            let changed = e.borrow_mut().apply(poll);
+            busy.set(false);
+            if let Some(conn) = &conn {
+                dbus::emit_changed(conn, &changed);
+            }
+            errors.borrow_mut().check(&e.borrow());
+            if e.borrow().ticks() % 10 == 1 {
+                homedirs::resume_all(&e);
+            }
+            ui::refresh();
+            if let Some(tray) = &tray {
+                let (status, paused, failed) = tray::status(&e.borrow());
+                if *last_status.borrow() != status {
+                    *last_status.borrow_mut() = status.clone();
+                    tray.update(move |t| {
+                        t.status = status;
+                        t.paused = paused;
+                        t.failed = failed;
+                    });
+                }
+            }
+        });
+        glib::ControlFlow::Continue
+    });
 }

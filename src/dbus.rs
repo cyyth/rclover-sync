@@ -57,17 +57,28 @@ fn handle(e: &Shared, conn: &gio::DBusConnection, method: &str, params: glib::Va
             let m: Vec<String> = e.borrow().cfg.accounts.iter().map(|a| a.mount.to_string_lossy().into_owned()).collect();
             inv.return_value(Some(&(m,).to_variant()));
         }
-        "GetStates" => {
-            let e = e.borrow();
-            let map: HashMap<String, String> = paths()
-                .into_iter()
-                .filter_map(|p| e.state(Path::new(&p)).map(|s| (p, s.as_str().to_owned())))
-                .collect();
-            inv.return_value(Some(&(map,).to_variant()));
-        }
-        "GetDirStates" => {
-            let map = e.borrow().dir_states(Path::new(&path()));
-            inv.return_value(Some(&(map,).to_variant()));
+        "GetStates" | "GetDirStates" => {
+            // Looking at files goes through the mount, which can wait on the network: do it
+            // off the main thread, so neither Nuvolo nor GNOME Files freezes meanwhile.
+            let (paths, dir) = if method == "GetStates" { (paths(), None) } else { (Vec::new(), Some(PathBuf::from(path()))) };
+            if dir.as_ref().is_some_and(|d| e.borrow().locate(d).is_none()) {
+                return inv.return_value(Some(&(HashMap::<String, String>::new(),).to_variant()));
+            }
+            let e = e.clone();
+            glib::spawn_future_local(async move {
+                let entries = gio::spawn_blocking(move || match dir {
+                    Some(d) => list_dir(&d),
+                    None => paths.into_iter().map(|p| (Path::new(&p).is_dir(), PathBuf::from(p))).collect(),
+                })
+                .await
+                .unwrap_or_default();
+                let e = e.borrow();
+                let map: HashMap<String, String> = entries
+                    .iter()
+                    .filter_map(|(is_dir, p)| e.state(p, *is_dir).map(|s| (p.to_string_lossy().into_owned(), s.as_str().to_owned())))
+                    .collect();
+                inv.return_value(Some(&(map,).to_variant()));
+            });
         }
         "Pin" | "Unpin" | "SyncNow" => {
             let ps: Vec<PathBuf> = paths().into_iter().map(PathBuf::from).collect();
@@ -103,4 +114,15 @@ fn handle(e: &Shared, conn: &gio::DBusConnection, method: &str, params: glib::Va
         }
         _ => inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method),
     }
+}
+
+/// Entries of `dir` and whether each is a folder. The type comes with the listing, so this
+/// costs one directory read and no stat per file.
+fn list_dir(dir: &Path) -> Vec<(bool, PathBuf)> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| (e.file_type().is_ok_and(|t| t.is_dir()), e.path()))
+        .collect()
 }
