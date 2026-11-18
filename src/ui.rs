@@ -7,6 +7,9 @@ use adw::prelude::*;
 use gtk::{gio, glib, pango};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::rc::Rc;
 
 const PAGES: [(&str, &str, &str); 4] = [
@@ -101,6 +104,8 @@ pub struct Ui {
     client_row: adw::ActionRow,
     ignore: gtk::ListBox,
     home: gtk::ListBox,
+    /// Running home-folder jobs: folder -> (what it is doing, files copied so far).
+    jobs: RefCell<HashMap<std::path::PathBuf, (&'static str, Arc<AtomicUsize>)>>,
 }
 
 fn label(text: &str, classes: &[&str]) -> gtk::Label {
@@ -319,6 +324,7 @@ impl Ui {
             client_row: adw::ActionRow::builder().title("OAuth Client").build(),
             ignore: boxed(),
             home: boxed(),
+            jobs: RefCell::new(HashMap::new()),
         });
         ui.build_pages(&grid);
         ui.wire();
@@ -477,7 +483,7 @@ impl Ui {
         reconnect.add_prefix(&gtk::Image::from_icon_name("view-refresh-symbolic"));
         let btn = button("Reconnect…");
         let ui = self.clone();
-        btn.connect_clicked(move |_| ui.reconnect());
+        btn.connect_clicked(move |b| ui.reconnect(b));
         reconnect.add_suffix(&btn);
         g.add(&reconnect);
         page.add(&g);
@@ -724,12 +730,60 @@ impl Ui {
                 }).as_str())
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name(if linked { "folder-remote-symbolic" } else { "folder-symbolic" }));
-            let btn = button(if linked { "Move Back" } else { "Move to Cloud" });
-            let (ui, home2, mount2) = (self.clone(), home.clone(), mount.clone());
-            btn.connect_clicked(move |_| if linked { ui.unlink_home(&home2, &mount2) } else { ui.link_home(&home2, &mount2) });
-            row.add_suffix(&btn);
+            if let Some((doing, n)) = self.jobs.borrow().get(&home) {
+                // Busy: a spinner and a live count instead of the button, so it cannot be started twice.
+                row.set_subtitle(&format!("{doing}… {} files so far", n.load(Ordering::Relaxed)));
+                let spinner = gtk::Spinner::builder().spinning(true).valign(gtk::Align::Center).build();
+                row.add_suffix(&spinner);
+            } else {
+                let btn = button(if linked { "Move Back" } else { "Move to Cloud" });
+                let (ui, home2, mount2) = (self.clone(), home.clone(), mount.clone());
+                btn.connect_clicked(move |b| {
+                    b.set_sensitive(false); // until the dialog is answered or the job starts
+                    if linked { ui.unlink_home(&home2, &mount2) } else { ui.link_home(&home2, &mount2) }
+                });
+                row.add_suffix(&btn);
+            }
             self.home.append(&row);
         }
+    }
+
+    /// Runs a slow home-folder job off the main thread. While it runs the folder's row shows a
+    /// spinner and a file count, and starting another job for the same folder is refused.
+    fn run_home_job(
+        self: &Rc<Self>,
+        home: std::path::PathBuf,
+        doing: &'static str,
+        work: impl FnOnce(&AtomicUsize) -> std::io::Result<()> + Send + 'static,
+        done: impl FnOnce(&Rc<Ui>, Result<(), String>) + 'static,
+    ) {
+        if self.jobs.borrow().contains_key(&home) {
+            return self.toast("That folder is already being moved");
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let first = self.jobs.borrow().is_empty();
+        self.jobs.borrow_mut().insert(home.clone(), (doing, count.clone()));
+        self.rebuild_home();
+        if first {
+            // One timer refreshes the progress of all running jobs, and stops with the last one.
+            let ui = self.clone();
+            glib::timeout_add_seconds_local(1, move || {
+                if ui.jobs.borrow().is_empty() {
+                    return glib::ControlFlow::Break;
+                }
+                ui.rebuild_home();
+                glib::ControlFlow::Continue
+            });
+        }
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(move || work(&count).map_err(|e| e.to_string()))
+                .await
+                .unwrap_or_else(|_| Err("the job crashed".to_owned()));
+            ui.jobs.borrow_mut().remove(&home);
+            ui.rebuild_home();
+            done(&ui, res);
+        });
     }
 
     fn link_home(self: &Rc<Self>, home: &std::path::Path, mount: &std::path::Path) {
@@ -745,32 +799,38 @@ impl Ui {
         d.add_response("cancel", "Cancel");
         d.add_response("move", "Move to Cloud");
         d.set_response_appearance("move", adw::ResponseAppearance::Suggested);
+        let ui = self.clone();
+        d.connect_response(Some("cancel"), move |_, _| ui.rebuild_home());
         let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
         d.connect_response(Some("move"), move |_, _| {
             let i = ui.acct.get();
             if !ui.e.borrow().is_mounted(i) {
+                ui.rebuild_home();
                 return ui.toast("The drive is not mounted; try again once it is.");
             }
             let backup = match homedirs::link(&home, &mount, &homedirs::backup_root()) {
                 Ok(b) => b,
-                Err(e) => return ui.toast(&format!("Could not move {}: {e}", home.display())),
+                Err(e) => {
+                    ui.rebuild_home();
+                    return ui.toast(&format!("Could not move {}: {e}", home.display()));
+                }
             };
             let rel = cloud.strip_prefix(&mount).unwrap_or(&cloud).to_string_lossy().into_owned();
             if let Err(e) = ui.e.borrow_mut().set_mode(i, &rel, Mode::Pinned) {
                 eprintln!("nuvolo: pin {rel}: {e}");
             }
-            ui.rebuild_home();
-            ui.toast(&format!("Copying {} to the cloud…", home.display()));
-            let (ui, cloud) = (ui.clone(), cloud.clone());
-            glib::spawn_future_local(async move {
-                let b = backup.clone();
-                let res = gio::spawn_blocking(move || homedirs::merge_into(&b, &cloud)).await;
-                ui.toast(&match res {
-                    Ok(Ok(())) => format!("Done. The original is kept in {}", backup.display()),
-                    Ok(Err(e)) => format!("Copy stopped: {e}. Nothing was lost: the original is in {}", backup.display()),
-                    Err(_) => format!("Copy stopped. Nothing was lost: the original is in {}", backup.display()),
-                });
-            });
+            let (b, c) = (backup.clone(), cloud.clone());
+            ui.run_home_job(
+                home.clone(),
+                "Copying to the cloud",
+                move |n| homedirs::merge_into(&b, &c, n),
+                move |ui, res| {
+                    ui.toast(&match res {
+                        Ok(()) => format!("Done. The original is kept in {}", backup.display()),
+                        Err(e) => format!("Copy stopped: {e}. Nothing was lost: the original is in {}", backup.display()),
+                    })
+                },
+            );
         });
         d.present(Some(&self.window));
     }
@@ -783,20 +843,22 @@ impl Ui {
         );
         d.add_response("cancel", "Cancel");
         d.add_response("back", "Move Back");
+        let ui = self.clone();
+        d.connect_response(Some("cancel"), move |_, _| ui.rebuild_home());
         let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
         d.connect_response(Some("back"), move |_, _| {
-            ui.toast(&format!("Downloading {}…", home.display()));
-            let (ui, home, mount) = (ui.clone(), home.clone(), mount.clone());
-            glib::spawn_future_local(async move {
-                let h = home.clone();
-                let res = gio::spawn_blocking(move || homedirs::unlink(&h, &mount)).await;
-                ui.rebuild_home();
-                ui.toast(&match res {
-                    Ok(Ok(())) => format!("{} is back on this device", home.display()),
-                    Ok(Err(e)) => format!("Could not move it back: {e}. The link is unchanged."),
-                    Err(_) => "Could not move it back. The link is unchanged.".to_owned(),
-                });
-            });
+            let (h, m, shown) = (home.clone(), mount.clone(), home.clone());
+            ui.run_home_job(
+                home.clone(),
+                "Downloading to this device",
+                move |n| homedirs::unlink(&h, &m, n),
+                move |ui, res| {
+                    ui.toast(&match res {
+                        Ok(()) => format!("{} is back on this device", shown.display()),
+                        Err(e) => format!("Could not move it back: {e}. The link is unchanged."),
+                    })
+                },
+            );
         });
         d.present(Some(&self.window));
     }
@@ -915,11 +977,14 @@ impl Ui {
         d.present(Some(&self.window));
     }
 
-    fn reconnect(self: &Rc<Self>) {
+    fn reconnect(self: &Rc<Self>, btn: &gtk::Button) {
         let i = self.acct.get();
         let Some(remote) = self.e.borrow().cfg.accounts.get(i).map(|a| a.remote.clone()) else { return };
+        // Disabled until sign-in finishes, so a second click cannot start a second sign-in.
+        btn.set_sensitive(false);
+        btn.set_label("Waiting for Sign-In…");
         self.toast("Opening your browser to sign in…");
-        let ui = self.clone();
+        let (ui, btn) = (self.clone(), btn.clone());
         glib::spawn_future_local(async move {
             let ok = gio::spawn_blocking(move || {
                 std::process::Command::new("rclone")
@@ -929,6 +994,8 @@ impl Ui {
             })
             .await
             .unwrap_or(false);
+            btn.set_label("Reconnect…");
+            btn.set_sensitive(true);
             if !ok {
                 return ui.toast("Reconnect failed or was cancelled");
             }
