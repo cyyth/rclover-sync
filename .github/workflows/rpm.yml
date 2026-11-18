@@ -11,8 +11,11 @@ permissions:
 
 jobs:
   rpm:
+    strategy:
+      matrix:
+        fedora: ['44', '45']
     runs-on: ubuntu-latest
-    container: fedora:latest
+    container: fedora:${{ matrix.fedora }}
     steps:
       - name: Install build dependencies
         run: dnf install -y git rpm-build make cargo rust gtk4-devel libadwaita-devel
@@ -31,7 +34,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rpms
+          name: rpms-fedora-${{ matrix.fedora }}
           path: dist/*.rpm
 
       - name: Attach to release
