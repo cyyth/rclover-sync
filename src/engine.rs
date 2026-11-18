@@ -59,6 +59,7 @@ pub struct Engine {
     errors: HashSet<PathBuf>,
     /// Accounts whose remount was deferred because uploads were pending.
     remount_later: HashSet<usize>,
+    stopped: bool,
     ticks: u64,
 }
 
@@ -84,6 +85,7 @@ impl Engine {
             syncing: HashSet::new(),
             errors: HashSet::new(),
             remount_later: HashSet::new(),
+            stopped: false,
             ticks: 0,
         };
         e.apply_options();
@@ -96,7 +98,40 @@ impl Engine {
 
     /// Unmounts everything and stops rclone.
     pub fn shutdown(&mut self) {
+        self.stopped = true;
+        self.rcd.take(); // unmounts what it can, then rclone exits
+        // A mount that was busy (open in Files) is dead now that rclone is gone. Detach it, or
+        // the next start finds "Transport endpoint is not connected" (issue #8).
+        let mounted = mounted_paths();
+        for a in &self.cfg.accounts {
+            if mounted.contains(&a.mount) {
+                rclone::lazy_unmount(&a.mount);
+            }
+        }
+    }
+
+    /// Restarts rclone if it died, then mounts everything again.
+    fn ensure_rclone(&mut self) {
+        if self.stopped || self.rcd.as_mut().is_some_and(|r| r.alive()) {
+            return;
+        }
+        if self.ticks % 5 != 0 {
+            return; // retry every 5 s while rclone will not start
+        }
+        eprintln!("nuvolo: rclone is not running, starting it again");
         self.rcd.take();
+        match Rcd::spawn(self.cfg.rc_port, &self.cache_dir) {
+            Ok(rcd) => {
+                self.client = rcd.client.clone();
+                self.rcd = Some(rcd);
+                self.paused = false;
+                self.apply_options();
+                for i in 0..self.cfg.accounts.len() {
+                    self.mount(i);
+                }
+            }
+            Err(e) => eprintln!("nuvolo: could not restart rclone: {e}"),
+        }
     }
 
     pub fn save(&self) {
@@ -117,9 +152,14 @@ impl Engine {
         let res = rclone::mount(&self.client, &self.cfg, a);
         let remote = a.remote.clone();
         match res {
-            Ok(()) => self.mount_errors.remove(&remote),
-            Err(e) => self.mount_errors.insert(remote, e),
-        };
+            Ok(()) => {
+                self.mount_errors.remove(&remote);
+            }
+            Err(e) => {
+                eprintln!("nuvolo: mounting {remote}: failed: {e}");
+                self.mount_errors.insert(remote, e);
+            }
+        }
     }
 
     pub fn pending_uploads(&self, remote: &str) -> u64 {
@@ -159,11 +199,13 @@ impl Engine {
         let mounted = mounted_paths();
         for i in 0..self.cfg.accounts.len() {
             let a = &self.cfg.accounts[i];
-            if self.remount_later.contains(&i) || mounted.contains(&a.mount) {
+            // Listed is not enough: a dead mount stays listed but every access fails.
+            let healthy = mounted.contains(&a.mount) && !rclone::is_dead_mount(&a.mount);
+            if self.remount_later.contains(&i) || healthy {
                 continue;
             }
-            // A failing mount is retried every 30 s, a lost one right away.
-            if self.mount_errors.contains_key(&a.remote) && self.ticks % 30 != 0 {
+            // A failing mount is retried every 10 s, a lost one right away.
+            if self.mount_errors.contains_key(&a.remote) && self.ticks % 10 != 0 {
                 continue;
             }
             eprintln!("nuvolo: {} is not mounted, mounting again", a.mount.display());
@@ -187,6 +229,7 @@ impl Engine {
     /// Polls rclone. Returns the paths whose state changed since the last tick.
     pub fn tick(&mut self) -> Vec<PathBuf> {
         self.ticks += 1;
+        self.ensure_rclone();
         if let Ok(v) = self.client.call("core/stats", json!({})) {
             let count = v["transfers"].as_u64().unwrap_or(0) + v["checks"].as_u64().unwrap_or(0);
             self.files_per_sec = self.last_count.map_or(0, |c| count.saturating_sub(c));
@@ -200,7 +243,7 @@ impl Engine {
             self.last_bytes = Some((bytes, now));
             self.core = v;
         }
-        for a in &self.cfg.accounts {
+        for a in self.cfg.accounts.iter().filter(|a| !self.mount_errors.contains_key(&a.remote)) {
             if let Ok(v) = self.client.call("vfs/stats", json!({ "fs": a.fs() })) {
                 self.vfs.insert(a.remote.clone(), v);
             }

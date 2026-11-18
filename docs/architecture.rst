@@ -41,8 +41,14 @@ example, open in GNOME Files), Nuvolo postpones the remount and retries every 5 
 A busy mount is never detached lazily: when the last program lets go of a lazily detached
 mount, rclone's cleanup unmounts the mount point, which by then holds the new mount.
 
-A watchdog checks ``/proc/self/mounts`` every 5 seconds and mounts again any account whose
-mount has disappeared.
+A watchdog runs every 5 seconds. It mounts again any account whose mount has disappeared
+or is *dead*: still listed in ``/proc/self/mounts`` but failing with "Transport endpoint is
+not connected" because the rclone serving it is gone. A dead mount is detached before
+mounting; nothing serves it, so that is safe. If rclone itself exits, Nuvolo starts it again
+and remounts everything.
+
+On quit, Nuvolo detaches any mount rclone could not release because it was busy, so the
+next start never finds a dead mount.
 
 rclone runs with a parent-death signal, so it exits whenever Nuvolo does, even after a crash.
 

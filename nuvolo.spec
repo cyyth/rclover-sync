@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           nuvolo
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -42,6 +42,10 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
 
 %changelog
+* Wed Nov 18 2026 Thanapong Chuangyanyong - 0.1.2-1
+- Recover from dead mounts ("Transport endpoint is not connected")
+- Restart rclone if it dies; never leave a dead mount behind on quit
+
 * Wed Nov 18 2026 Thanapong Chuangyanyong - 0.1.1-1
 - Keep mounts alive: never detach busy mounts, remount lost ones
 - Live data speed, parallel offline downloads, partial folder state
