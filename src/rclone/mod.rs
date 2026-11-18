@@ -13,7 +13,7 @@ mod daemon;
 mod links;
 mod mount;
 
-pub use bisync::{bisync, sync_file};
+pub use bisync::{bisync, Scope};
 pub use client::Client;
 pub use daemon::Rcd;
 pub use links::{public_link, web_url};

@@ -44,14 +44,42 @@ mounted (no internet), the same path shows the offline copy instead. So anything
 into an Offline folder keeps working at all times: home folders moved to the cloud, and
 files you link from ``~/.config`` (pin the file or its folder).
 
-Nuvolo syncs the copies both ways with the cloud after every mount, every 10 minutes, and on
-**Sync Now**:
+Nuvolo syncs the copies both ways with the cloud after every mount, every 10 minutes (with
+**Background Sync** on), and on **Sync Now** (Overview page, or the Nuvolo menu in GNOME
+Files). A change on one side is copied to the other, deletions included.
 
-* a change on one side is copied to the other, deletions included;
-* when both sides changed, the newer file wins and the other is kept next to it with a
-  ``.conflict1`` suffix;
-* if more than half of a folder's files would be deleted, the sync stops and tells you,
-  in case something went wrong.
+.. _conflicts:
+
+Conflicts
+~~~~~~~~~
+
+A file that changed both on this device and in the cloud since the last sync is a
+conflict. Preferences → **Conflicts** sets what happens:
+
+Keep Both (default)
+   The newer version keeps the name; the other is kept next to it as
+   ``name (conflict 1).ext``, so it still opens with the right app. Nothing is lost.
+   (A single pinned file keeps rclone's name for the copy, ``name.ext.conflict1``.)
+Keep the Newer
+   The newer version is kept; the older one is deleted.
+This Device Wins / Cloud Wins
+   That side's version is kept; the other is deleted.
+
+The first sync of a newly pinned folder merges both sides: the newer version of a file wins,
+and nothing is deleted.
+
+Files opened through the mounted drive are different: saving uploads them a few seconds
+later, so if the same file changed in the cloud meanwhile, the last save wins.
+
+Safety stops
+~~~~~~~~~~~~
+
+* If a sync would delete more than half of an offline folder, or every file in it changed
+  at once, Nuvolo stops and says so. If that was intended, click **Sync Anyway** on the
+  Overview page.
+* If every file in an offline copy was deleted while the drive was not mounted, Nuvolo
+  puts them back from the cloud. To delete files for good, delete them in the drive while
+  Nuvolo runs.
 
 Changes made while Nuvolo was not running are uploaded the next time it mounts the drive.
 Files saved directly into ``~/Cloud/<drive>`` outside Offline folders while it was not
@@ -60,9 +88,24 @@ Offline (that is how unpinning frees the space).
 
 The **Offline Copies** row on the Overview page shows whether they are up to date.
 
-.. note::
-   Offline files take space twice: once as the offline copy, and once in rclone's cache,
-   which the live mount reads from.
+A pinned folder inside an On-Demand one works too: with Nuvolo closed, ``~/Cloud/gdrive/A``
+then holds just ``B``, the pinned folder, with all its files.
+
+Storage on this device
+~~~~~~~~~~~~~~~~~~~~~~
+
+Local storage has two parts, each with its own bar on the Overview page:
+
+Offline folders (blue)
+   Always kept, as large as what you set to Offline. Pinning 100 GiB takes 100 GiB.
+
+On-demand cache (green)
+   Files you open from On-Demand folders, up to **On-Demand Cache Size** in Preferences.
+   Files come and go: the oldest are cleared when it is full, or after the cache's maximum
+   age.
+
+So with 100 GiB pinned and a 20 GiB cache, Nuvolo uses up to 120 GiB, of which 20 GiB
+changes as you open files.
 
 Home folders
 ------------
@@ -163,6 +206,12 @@ Google Drive remotes created with rclone's built-in client share their API quota
 other rclone user. Nuvolo shows a banner when that is the case. Create a *Desktop app*
 OAuth client in Google Cloud Console, enter it with **Use Custom Client ID**, then use
 **Reconnect Account** in Preferences.
+
+Help
+----
+
+The help button in the window's header bar (or F1) explains the icons Nuvolo shows on files
+in GNOME Files, and how conflicts are settled.
 
 GNOME Files integration
 -----------------------

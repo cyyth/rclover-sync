@@ -15,6 +15,8 @@ pub(super) struct Overview {
     mount_pill: gtk::Label,
     retry_btn: gtk::Button,
     offline_row: adw::ActionRow,
+    offline_sync_btn: gtk::Button,
+    offline_force_btn: gtk::Button,
     pub ondemand: adw::SwitchRow,
     pub bgsync: adw::SwitchRow,
     pause_row: adw::ActionRow,
@@ -24,9 +26,7 @@ pub(super) struct Overview {
     stat_speed: gtk::Label,
     stat_speed_sub: gtk::Label,
     stat_streams: gtk::Label,
-    stat_cache: gtk::Label,
-    stat_cache_sub: gtk::Label,
-    cache_bar: gtk::ProgressBar,
+    storage: Storage,
     stat_errors: gtk::Label,
     stat_errors_sub: gtk::Label,
     recent: gtk::ListBox,
@@ -44,11 +44,17 @@ impl Overview {
         mount_row.add_suffix(&retry_btn);
         let offline_row = adw::ActionRow::builder().title("Offline Copies").subtitle_lines(0).build();
         offline_row.add_prefix(&gtk::Image::from_icon_name("folder-download-symbolic"));
+        let offline_force_btn = button("Sync Anyway");
+        offline_force_btn.add_css_class("destructive-action");
+        offline_force_btn.set_tooltip_text(Some("Sync past the safety stop, passing the deletions or changes on"));
+        offline_row.add_suffix(&offline_force_btn);
+        let offline_sync_btn = button("Sync Now");
+        offline_row.add_suffix(&offline_sync_btn);
         let ondemand = adw::SwitchRow::builder()
             .title("On-Demand Streaming")
             .subtitle("Files download only when opened. Turn off to keep the whole drive offline.")
             .build();
-        let bgsync = adw::SwitchRow::builder().title("Background Sync").subtitle("Refresh pinned folders from the cloud every hour").build();
+        let bgsync = adw::SwitchRow::builder().title("Background Sync").subtitle("Sync Offline folders with the cloud every 10 minutes").build();
         let pause_row = adw::ActionRow::builder().title("Transfers").build();
         let pause_btn = button("Pause All");
         pause_btn.add_css_class("pill");
@@ -58,20 +64,20 @@ impl Overview {
         let (c_speed, stat_speed, stat_speed_sub) = stat_card("Data Speed");
         let (c_streams, stat_streams, _) = stat_card("Active Streams");
         let (c_err, stat_errors, stat_errors_sub) = stat_card("Errors");
-        let (c_cache, stat_cache, stat_cache_sub) = stat_card("VFS Cache Used");
-        let cache_bar = gtk::ProgressBar::new();
-        c_cache.insert_child_after(&cache_bar, Some(&stat_cache));
+        let storage = Storage::new();
         let grid = gtk::Grid::builder().column_spacing(12).row_spacing(12).column_homogeneous(true).build();
         grid.attach(&c_fps, 0, 0, 1, 1);
         grid.attach(&c_speed, 1, 0, 1, 1);
         grid.attach(&c_streams, 2, 0, 1, 1);
         grid.attach(&c_err, 0, 1, 1, 1);
-        grid.attach(&c_cache, 1, 1, 2, 1);
+        grid.attach(&storage.card, 1, 1, 2, 1);
         Overview {
             mount_row,
             mount_pill,
             retry_btn,
             offline_row,
+            offline_sync_btn,
+            offline_force_btn,
             ondemand,
             bgsync,
             pause_row,
@@ -81,9 +87,7 @@ impl Overview {
             stat_speed,
             stat_speed_sub,
             stat_streams,
-            stat_cache,
-            stat_cache_sub,
-            cache_bar,
+            storage,
             stat_errors,
             stat_errors_sub,
             recent: boxed(),
@@ -107,6 +111,16 @@ impl Ui {
         });
         g.add(&ov.mount_row);
         g.add(&ov.offline_row);
+        let ui = self.clone();
+        ov.offline_sync_btn.connect_clicked(move |_| {
+            ui.e.borrow_mut().sync_offline(ui.acct.get());
+            ui.tick_mount();
+        });
+        let ui = self.clone();
+        ov.offline_force_btn.connect_clicked(move |_| {
+            ui.e.borrow_mut().sync_offline_anyway(ui.acct.get());
+            ui.tick_mount();
+        });
         g.add(&ov.ondemand);
         g.add(&ov.bgsync);
         g.add(&ov.pause_row);
@@ -183,13 +197,16 @@ impl Ui {
         }
         let pinned = a.modes.values().filter(|m| **m == Mode::Pinned).count();
         ov.offline_row.set_visible(pinned > 0);
-        let n = format!("{pinned} folder{} kept offline", if pinned == 1 { "" } else { "s" });
-        ov.offline_row.set_subtitle(&glib::markup_escape_text(&if state != MountState::Mounted {
+        let n = format!("{pinned} item{} kept offline", if pinned == 1 { "" } else { "s" });
+        let (mounted, syncing, problem) = (state == MountState::Mounted, e.offline_syncing(i), e.offline_error(&a.remote));
+        ov.offline_sync_btn.set_visible(mounted && !syncing);
+        ov.offline_force_btn.set_visible(mounted && !syncing && problem.is_some_and(|p| p.can_force));
+        ov.offline_row.set_subtitle(&glib::markup_escape_text(&if !mounted {
             format!("{n}. While the drive is not mounted, {} shows these offline copies.", a.mount.display())
-        } else if e.offline_syncing(i) {
+        } else if syncing {
             format!("{n} · syncing with the cloud…")
-        } else if let Some(err) = e.offline_error(&a.remote) {
-            format!("{n} · not up to date: {}", explain(err))
+        } else if let Some(p) = problem {
+            format!("{n} · not up to date.\n{}", p.text)
         } else {
             format!("{n} · up to date, and available when Nuvolo is not running")
         }));
@@ -206,11 +223,8 @@ impl Ui {
         ov.stat_speed_sub.set_label(&format!("{} transferred this session", human(e.core["bytes"].as_f64().unwrap_or(0.0))));
         ov.stat_streams.set_label(&transferring.to_string());
         let used = e.vfs.get(&a.remote).and_then(|v| v["diskCache"]["bytesUsed"].as_f64()).unwrap_or(0.0);
-        let max = e.cfg.cache_max_size_gib as f64 * 1024f64.powi(3);
-        ov.stat_cache.set_label(&format!("{} / {} GiB", human(used), e.cfg.cache_max_size_gib));
-        ov.cache_bar.set_fraction((used / max).min(1.0));
         let files = e.vfs.get(&a.remote).and_then(|v| v["diskCache"]["files"].as_u64()).unwrap_or(0);
-        ov.stat_cache_sub.set_label(&format!("{files} files · max age {} h", e.cfg.cache_max_age_hours));
+        ov.storage.show(e.offline_bytes(&a.remote), used, files, e.cfg.cache_max_size_gib, e.cfg.cache_max_age_hours);
         ov.stat_errors.set_label(&e.core["errors"].as_u64().unwrap_or(0).to_string());
         let last = e.core["lastError"].as_str().map_or_else(|| "No errors".to_owned(), explain);
         ov.stat_errors_sub.set_label(&last);
@@ -224,5 +238,65 @@ impl Ui {
                 ov.recent.append(&placeholder("No transfers yet"));
             }
         }
+    }
+}
+
+/// The "Storage on This Device" card: two labelled bars. Offline folders are the fixed part
+/// (always kept, as large as what is pinned); the on-demand cache is the part that comes and
+/// goes, up to its limit.
+struct Storage {
+    card: gtk::Box,
+    total: gtk::Label,
+    pinned_value: gtk::Label,
+    pinned_bar: gtk::ProgressBar,
+    cache_value: gtk::Label,
+    cache_bar: gtk::ProgressBar,
+    cache_note: gtk::Label,
+}
+
+impl Storage {
+    fn new() -> Storage {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        card.add_css_class("card");
+        card.add_css_class("stat");
+        card.append(&label("Storage on This Device", &["caption-heading", "dim-label"]));
+        let total = label("–", &["title-2", "numeric"]);
+        card.append(&total);
+        let part = |name: &str, class: &str, note: &str| {
+            let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            head.set_margin_top(6);
+            head.append(&label(name, &["heading"]));
+            let value = label("–", &["numeric"]);
+            value.set_hexpand(true);
+            value.set_xalign(1.0);
+            head.append(&value);
+            let bar = gtk::ProgressBar::new();
+            bar.add_css_class(class);
+            let note = label(note, &["caption", "dim-label"]);
+            note.set_ellipsize(gtk::pango::EllipsizeMode::None);
+            note.set_wrap(true);
+            card.append(&head);
+            card.append(&bar);
+            card.append(&note);
+            (value, bar, note)
+        };
+        let (pinned_value, pinned_bar, _) = part("Offline folders", "storage-pinned", "Always on this device, also when Nuvolo is not running. As large as what you set to Offline.");
+        let (cache_value, cache_bar, cache_note) = part("On-demand cache", "storage-cache", "");
+        Storage { card, total, pinned_value, pinned_bar, cache_value, cache_bar, cache_note }
+    }
+
+    fn show(&self, pinned: Option<u64>, used: f64, files: u64, limit_gib: u32, age_hours: u32) {
+        let limit = limit_gib as f64 * 1024f64.powi(3);
+        let p = pinned.map(|b| b as f64);
+        self.total.set_label(&format!("{} used · at most {}", human(p.unwrap_or(0.0) + used), human(p.unwrap_or(0.0) + limit)));
+        self.pinned_value.set_label(&p.map_or_else(|| "measured after the next sync".to_owned(), human));
+        // The offline part has no limit: it is exactly what is pinned, so its bar is full.
+        self.pinned_bar.set_fraction(if p.unwrap_or(0.0) > 0.0 { 1.0 } else { 0.0 });
+        self.cache_value.set_label(&format!("{} of {limit_gib} GiB", human(used)));
+        self.cache_bar.set_fraction((used / limit).min(1.0));
+        self.cache_note.set_label(&format!(
+            "Files you opened from On-Demand folders ({files} now). The oldest are cleared when it is full, or after {}. Change the size in Preferences.",
+            if age_hours % 24 == 0 { format!("{} days", age_hours / 24) } else { format!("{age_hours} hours") }
+        ));
     }
 }

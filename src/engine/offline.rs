@@ -15,16 +15,21 @@
 //! ([`rclone::bisync`]). Anything else found under the mount (written while it was not
 //! mounted, or a copy that is no longer pinned) is moved into the drive first, so it gets
 //! uploaded instead of staying hidden under the mount.
-// ponytail: pinned files are stored twice: the offline copy, and rclone's VFS cache that the
-// live mount reads from. Upgrade path: reflink between the two on btrfs, or serve the mount's
-// cache from the offline copy.
+//!
+//! Pinned files are not loaded into rclone's VFS cache: the offline copies are the fixed
+//! baseline of local storage, and the VFS cache limit is only the space for on-demand files.
+// ponytail: while mounted, opening a pinned file reads it through the mount (from the network,
+// into the VFS cache), not from its offline copy; if the network drops mid-session, only the
+// offline copies under the mount have it. Upgrade path: unmount when the network goes away, so
+// the offline copies show.
 
 use super::{Done, Engine};
-use crate::config::{Account, Config, Mode};
+use crate::config::{Account, Config, ConflictPolicy, Mode};
 use crate::errors::explain;
 use crate::homedirs::merge_entry;
 use crate::notify;
-use crate::rclone::{self, Client};
+use crate::rclone::{self, Client, Scope};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -63,8 +68,13 @@ impl Engine {
     }
 
     /// Why the offline copies of `remote` are not up to date, if they are not.
-    pub fn offline_error(&self, remote: &str) -> Option<&String> {
+    pub fn offline_error(&self, remote: &str) -> Option<&OfflineProblem> {
         self.offline_errors.get(remote)
+    }
+
+    /// Space the offline copies of `remote` take, as of their last sync.
+    pub fn offline_bytes(&self, remote: &str) -> Option<u64> {
+        self.offline_bytes.get(remote).copied()
     }
 
     /// True while the offline copies of account `i` are syncing.
@@ -75,6 +85,15 @@ impl Engine {
     /// Syncs the offline copies of account `i` with the cloud, in the background. Does
     /// nothing unless the drive is mounted and the folder under it is reachable.
     pub fn sync_offline(&mut self, i: usize) {
+        self.start_offline_sync(i, false);
+    }
+
+    /// "Sync Anyway": syncs past bisync's safety stops (mass deletion, every file changed).
+    pub fn sync_offline_anyway(&mut self, i: usize) {
+        self.start_offline_sync(i, true);
+    }
+
+    fn start_offline_sync(&mut self, i: usize, force: bool) {
         if !self.offline_dirs.contains_key(&i) || self.offline_running.contains(&i) || !self.is_mounted(i) {
             return;
         }
@@ -85,19 +104,24 @@ impl Engine {
             workdir: self.cache_dir.join("bisync"),
             pinned: pinned_roots(&a),
             excludes: pinned_roots(&a).iter().map(|rel| excludes_below(&self.cfg, &a, rel)).collect(),
+            policy: self.cfg.conflicts,
+            force,
             account: a,
         };
         self.offline_running.insert(i);
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Done::Synced(i, job.run()));
+            let res = job.run();
+            let bytes = job.pinned.iter().map(|rel| du(&job.under.join(rel))).sum();
+            let _ = tx.send(Done::Synced(i, res, bytes));
         });
     }
 
     /// An offline sync finished.
-    pub(super) fn synced(&mut self, i: usize, res: Result<(), String>) {
+    pub(super) fn synced(&mut self, i: usize, res: Result<(), OfflineProblem>, bytes: u64) {
         self.offline_running.remove(&i);
         let Some(remote) = self.cfg.accounts.get(i).map(|a| a.remote.clone()) else { return };
+        self.offline_bytes.insert(remote.clone(), bytes);
         let id = format!("offline-{remote}");
         match res {
             Ok(()) => {
@@ -105,15 +129,23 @@ impl Engine {
                     notify::withdraw(&id);
                 }
             }
-            Err(e) => {
-                eprintln!("nuvolo: offline copies of {remote}: {e}");
-                if self.offline_errors.get(&remote) != Some(&e) {
-                    notify::notify(&id, &format!("Offline copies of “{remote}” are not up to date"), &explain(&e));
+            Err(p) => {
+                if self.offline_errors.get(&remote) != Some(&p) {
+                    notify::notify(&id, &format!("Offline copies of “{remote}” are not up to date"), &p.text);
                 }
-                self.offline_errors.insert(remote, e);
+                self.offline_errors.insert(remote, p);
             }
         }
     }
+}
+
+/// Why offline copies are not up to date, in words for the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfflineProblem {
+    /// Which folder, what happened, what to do.
+    pub text: String,
+    /// A safety stop that "Sync Anyway" overrides.
+    pub can_force: bool,
 }
 
 /// Everything one offline sync needs, moved to its thread.
@@ -126,25 +158,91 @@ struct OfflineJob {
     pinned: Vec<String>,
     /// Exclude rules for each entry of `pinned`.
     excludes: Vec<Vec<String>>,
+    policy: ConflictPolicy,
+    force: bool,
 }
 
 impl OfflineJob {
-    fn run(&self) -> Result<(), String> {
+    /// Moves loose files into the drive, then syncs each pinned folder, then the pinned single
+    /// files (grouped by folder). Goes on past a failing folder, and reports the first failure.
+    fn run(&self) -> Result<(), OfflineProblem> {
         let mount = &self.account.mount;
-        rescue_strays(&self.under, mount, &self.pinned).map_err(|e| format!("moving files into the drive: {e}"))?;
+        let fail = |what: &str, raw: String| {
+            eprintln!("nuvolo: offline copy of {what}: {raw}");
+            OfflineProblem {
+                text: format!("“{what}”: {}", explain(&raw)),
+                can_force: raw.contains("too many deletes") || raw.contains("all files were changed"),
+            }
+        };
+        rescue_strays(&self.under, mount, &self.pinned).map_err(|e| fail("files saved while the drive was not mounted", e.to_string()))?;
         let fs_ = self.account.fs();
+        let mut first: Option<OfflineProblem> = None;
+        let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (rel, excludes) in self.pinned.iter().zip(&self.excludes) {
             let local = if rel.is_empty() { self.under.clone() } else { self.under.join(rel) };
             // A pinned path is a file if either side says so (the cloud side, through the mount).
             if local.is_file() || mount.join(rel).is_file() {
-                fs::create_dir_all(local.parent().unwrap_or(&self.under)).map_err(|e| e.to_string())?;
-                rclone::sync_file(&self.client, &local, &fs_, rel)?;
-            } else {
-                fs::create_dir_all(&local).map_err(|e| e.to_string())?;
-                rclone::bisync(&self.client, &local, &format!("{fs_}{rel}"), &self.workdir, excludes)?;
+                let (dir, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+                files.entry(dir.to_owned()).or_default().push(name.to_owned());
+                continue;
+            }
+            let res = fs::create_dir_all(&local)
+                .map_err(|e| e.to_string())
+                .and_then(|_| rclone::bisync(&self.client, &local, &format!("{fs_}{rel}"), &self.workdir, Scope::All(excludes), self.policy, self.force))
+                .and_then(|_| tidy_conflicts(&local).map_err(|e| e.to_string()));
+            if let Err(e) = res {
+                first.get_or_insert(fail(if rel.is_empty() { "whole drive" } else { rel }, e));
             }
         }
-        Ok(())
+        for (dir, names) in files {
+            let local = if dir.is_empty() { self.under.clone() } else { self.under.join(&dir) };
+            // Single files keep bisync's own conflict name ("app.toml.conflict1"): a readable
+            // name would fall outside the files this sync covers.
+            let res = fs::create_dir_all(&local)
+                .map_err(|e| e.to_string())
+                .and_then(|_| rclone::bisync(&self.client, &local, &format!("{fs_}{dir}"), &self.workdir, Scope::Files(&names), self.policy, true));
+            if let Err(e) = res {
+                first.get_or_insert(fail(&names[0], e));
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+}
+
+/// Gives conflict copies a readable name that keeps the extension, so they open as usual:
+/// bisync's "notes.txt.conflict1" becomes "notes (conflict 1).txt". The next sync passes the
+/// rename on to the cloud.
+fn tidy_conflicts(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            tidy_conflicts(&path)?;
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((base, n)) = name.rsplit_once(".conflict").filter(|(b, n)| !b.is_empty() && !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())) else {
+            continue;
+        };
+        let (stem, ext) = match base.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+            _ => (base, String::new()),
+        };
+        let target = (0..)
+            .map(|k| dir.join(if k == 0 { format!("{stem} (conflict {n}){ext}") } else { format!("{stem} (conflict {n}-{k}){ext}") }))
+            .find(|t| t.symlink_metadata().is_err())
+            .expect("a free name exists");
+        fs::rename(&path, target)?;
+    }
+    Ok(())
+}
+
+/// Bytes of the files under `p` (or of `p` itself), not following links.
+fn du(p: &Path) -> u64 {
+    match fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => fs::read_dir(p).into_iter().flatten().flatten().map(|e| du(&e.path())).sum(),
+        Ok(m) if m.is_file() => m.len(),
+        _ => 0,
     }
 }
 
@@ -231,6 +329,22 @@ mod tests {
         let cfg = Config { ignore: vec!["*.tmp".into()], ..Config::default() };
         assert_eq!(excludes_below(&cfg, &a, "Projects"), vec!["*.tmp".to_owned(), "/web/node_modules/**".to_owned()]);
         assert_eq!(excludes_below(&cfg, &a, ""), vec!["*.tmp".to_owned(), "/Projects/web/node_modules/**".to_owned()]);
+    }
+
+    #[test]
+    fn conflict_copies_get_readable_names() {
+        let d = std::env::temp_dir().join(format!("nuvolo-conflicts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("sub")).unwrap();
+        for f in ["notes.txt.conflict1", "sub/Makefile.conflict2", "photo.conflict.jpg", "plain.txt"] {
+            fs::write(d.join(f), f).unwrap();
+        }
+        tidy_conflicts(&d).unwrap();
+        assert_eq!(fs::read_to_string(d.join("notes (conflict 1).txt")).unwrap(), "notes.txt.conflict1");
+        assert!(d.join("sub/Makefile (conflict 2)").exists());
+        assert!(d.join("photo.conflict.jpg").exists(), "not a conflict copy");
+        assert!(d.join("plain.txt").exists());
+        let _ = fs::remove_dir_all(d);
     }
 
     #[test]

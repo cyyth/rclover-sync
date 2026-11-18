@@ -17,6 +17,7 @@ mod poll;
 mod states;
 
 pub use mounts::MountState;
+pub use offline::OfflineProblem;
 pub use poll::uploads_in;
 
 use crate::config::{self, Account, Config};
@@ -38,8 +39,8 @@ pub type Shared = Rc<RefCell<Engine>>;
 pub enum Done {
     /// Mounting account `i` finished.
     Mounted(usize, Result<(), String>),
-    /// Syncing the offline copies of account `i` finished.
-    Synced(usize, Result<(), String>),
+    /// Syncing the offline copies of account `i` finished; with their size on disk.
+    Synced(usize, Result<(), OfflineProblem>, u64),
 }
 
 /// A home-folder move that is running now (see `homedirs::runner`).
@@ -93,7 +94,9 @@ pub struct Engine {
     /// Accounts whose offline copies are syncing now.
     offline_running: HashSet<usize>,
     /// Why the last sync of an account's offline copies failed, by remote.
-    offline_errors: HashMap<String, String>,
+    offline_errors: HashMap<String, OfflineProblem>,
+    /// Size of each account's offline copies after the last sync, by remote.
+    offline_bytes: HashMap<String, u64>,
 
     /// Home-folder moves running now, by home folder.
     pub jobs: HashMap<PathBuf, Progress>,
@@ -133,6 +136,7 @@ impl Engine {
             offline_dirs: HashMap::new(),
             offline_running: HashSet::new(),
             offline_errors: HashMap::new(),
+            offline_bytes: HashMap::new(),
             jobs: HashMap::new(),
         };
         e.apply_options();
@@ -186,7 +190,7 @@ impl Engine {
         while let Ok(d) = self.done_rx.try_recv() {
             match d {
                 Done::Mounted(i, res) => self.mounted(i, res),
-                Done::Synced(i, res) => self.synced(i, res),
+                Done::Synced(i, res, bytes) => self.synced(i, res, bytes),
             }
         }
     }

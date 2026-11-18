@@ -12,10 +12,48 @@ use std::path::{Path, PathBuf};
 pub enum Mode {
     /// Cloud only: downloaded into the VFS cache when opened.
     OnDemand,
-    /// Always offline: Nuvolo reads it into the VFS cache and keeps it warm.
+    /// Always offline: kept as an offline copy under the mount point (`engine::offline`).
     Pinned,
     /// Hidden from the mount and never transferred.
     Excluded,
+}
+
+/// What happens to a file in an offline folder that changed both on this device and in the
+/// cloud since the last sync.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConflictPolicy {
+    /// The newer version keeps the name; the other is kept as "name (conflict 1).ext".
+    #[default]
+    KeepBoth,
+    /// The newer version wins; the other is deleted.
+    Newer,
+    /// This device's version wins; the cloud's is deleted.
+    ThisDevice,
+    /// The cloud's version wins; this device's is deleted.
+    Cloud,
+}
+
+impl ConflictPolicy {
+    pub const ALL: [ConflictPolicy; 4] = [Self::KeepBoth, Self::Newer, Self::ThisDevice, Self::Cloud];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::KeepBoth => "Keep Both",
+            Self::Newer => "Keep the Newer",
+            Self::ThisDevice => "This Device Wins",
+            Self::Cloud => "Cloud Wins",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::KeepBoth => "The newer version keeps the name; the other is kept next to it as “name (conflict 1).ext”. Nothing is lost.",
+            Self::Newer => "The newer version is kept; the older one is deleted.",
+            Self::ThisDevice => "The version on this device is kept; the cloud's is deleted.",
+            Self::Cloud => "The cloud's version is kept; the one on this device is deleted.",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +132,8 @@ pub struct Config {
     pub no_modtime: bool,
     pub ignore: Vec<String>,
     pub rc_port: u16,
+    /// How offline copies settle a file changed in both places.
+    pub conflicts: ConflictPolicy,
 }
 
 impl Default for Config {
@@ -109,6 +149,7 @@ impl Default for Config {
                 .map(String::from)
                 .to_vec(),
             rc_port: 5572,
+            conflicts: ConflictPolicy::KeepBoth,
         }
     }
 }

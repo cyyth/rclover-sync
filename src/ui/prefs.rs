@@ -2,6 +2,7 @@
 
 use super::widgets::*;
 use super::{Ui, AGES};
+use crate::config::ConflictPolicy;
 use crate::errors::explain;
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -47,7 +48,12 @@ impl Ui {
             e.save();
             e.apply_options();
         });
-        let size = spin("Max VFS Cache Size (GiB)", "--vfs-cache-max-size", 2000.0, cfg.cache_max_size_gib);
+        let size = spin(
+            "On-Demand Cache Size (GiB)",
+            "Space for files opened on demand, on top of Offline folders. Files are cleared when it is full · --vfs-cache-max-size",
+            2000.0,
+            cfg.cache_max_size_gib,
+        );
         let ui = self.clone();
         size.connect_value_notify(move |r| {
             {
@@ -90,9 +96,28 @@ impl Ui {
 
         let g = group(
             "Home Folders",
-            Some("Keep these folders in the cloud. The folder in your home becomes a link to its copy in the drive, which stays available offline. Your current folder is kept as a backup."),
+            Some("Keep these folders in the cloud: the folder in your home becomes a link to its copy in the drive. What stays on this device follows the Folders & Cache page. Your current folder is kept as a backup."),
         );
         g.add(&self.home);
+        page.add(&g);
+
+        let g = group(
+            "Conflicts",
+            Some("When a file in an Offline folder changed both on this device and in the cloud since the last sync. Files edited through the mounted drive are saved straight to the cloud, so there the last save wins."),
+        );
+        let names = gtk::StringList::new(&ConflictPolicy::ALL.map(|p| p.label()));
+        let policy = adw::ComboRow::builder().title("When a File Changed in Both Places").model(&names).build();
+        policy.set_selected(ConflictPolicy::ALL.iter().position(|p| *p == cfg.conflicts).unwrap_or(0) as u32);
+        policy.set_subtitle(&glib::markup_escape_text(cfg.conflicts.describe()));
+        let ui = self.clone();
+        policy.connect_selected_notify(move |r| {
+            let p = ConflictPolicy::ALL[r.selected() as usize];
+            r.set_subtitle(&glib::markup_escape_text(p.describe()));
+            let mut e = ui.e.borrow_mut();
+            e.cfg.conflicts = p;
+            e.save();
+        });
+        g.add(&policy);
         page.add(&g);
 
         let g = group("OAuth & Security", None);

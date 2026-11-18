@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           nuvolo
-Version:        0.2.1
+Version:        0.2.2
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -42,10 +42,22 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
 
 %changelog
+* Wed Nov 18 2026 Thanapong Chuangyanyong - 0.2.2-1
+- Storage card with two bars: Offline folders (always kept) and the on-demand cache
+- Conflicts setting (Keep Both by default, Keep the Newer, This Device Wins, Cloud Wins);
+  conflict copies keep their extension: "name (conflict 1).ext"
+- Offline sync errors in plain words; Sync Now and Sync Anyway buttons; stale bisync locks
+  cleared; an offline copy found empty is refilled from the cloud
+- Single pinned files sync with the same two-way sync and conflict handling as folders
+- Help dialog (F1): what the GNOME Files icons mean, how conflicts are settled
+
 * Wed Nov 18 2026 Thanapong Chuangyanyong - 0.2.1-1
 - Home Folders only make the link: the folder's mode comes from Folders & Cache (no more
   automatic pinning or Start at Login); rows show the mode, mixed modes, and are greyed
   out for Excluded folders
+- Storage in two parts: Offline folders are a fixed baseline, the cache size limit is only
+  for on-demand files; pinned files are no longer also loaded into the cache
+- Background Sync now syncs Offline folders every 10 minutes
 
 * Wed Nov 18 2026 Thanapong Chuangyanyong - 0.2.0-1
 - Offline copies: pinned folders and files stay available at the same path when Nuvolo is

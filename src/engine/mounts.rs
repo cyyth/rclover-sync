@@ -99,7 +99,6 @@ impl Engine {
                     notify::withdraw(&id);
                 }
                 self.sync_offline(i);
-                self.refresh_pins(); // keep the live mount's cache warm too
             }
             Err(e) => {
                 eprintln!("nuvolo: mounting {remote}: failed: {e}");

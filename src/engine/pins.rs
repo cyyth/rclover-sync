@@ -1,13 +1,12 @@
-//! Per-folder modes: On-Demand, Always Offline (pinned) and Excluded, and keeping pinned
-//! files warm in rclone's VFS cache so the live mount can open them without the network.
-//! The offline copies that work without Nuvolo are in [`super::offline`].
+//! Per-folder modes: On-Demand, Always Offline (pinned) and Excluded.
+//!
+//! Pinned content lives as offline copies ([`super::offline`]); it is not loaded into rclone's
+//! VFS cache, which is only the space for files opened on demand.
 
 use super::Engine;
 use crate::config::Mode;
 use serde_json::json;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 impl Engine {
     pub fn set_mode(&mut self, i: usize, rel: &str, mode: Mode) -> Result<(), String> {
@@ -20,11 +19,7 @@ impl Engine {
         } else {
             a.modes.insert(rel.clone(), mode);
         }
-        let target = a.mount.join(&rel);
         self.save();
-        if mode == Mode::Pinned {
-            hydrate(target, self.cfg.transfers);
-        }
         if mode == Mode::Pinned || was_pinned {
             self.sync_offline(i); // makes or removes the offline copy
         }
@@ -60,13 +55,12 @@ impl Engine {
         self.sync_offline(i);
     }
 
-    /// Re-lists the folder from the cloud now and, if pinned, re-reads it into the cache and
-    /// syncs its offline copy.
+    /// Re-lists the folder from the cloud now and, if pinned, syncs its offline copy.
     pub fn sync_now(&mut self, abs: &Path) {
         let Some((i, rel)) = self.locate(abs) else { return };
         let a = &self.cfg.accounts[i];
         let pinned = a.mode_of(&rel) == Mode::Pinned;
-        let (client, fs_, abs, workers) = (self.client.clone(), a.fs(), abs.to_path_buf(), self.cfg.transfers);
+        let (client, fs_, abs) = (self.client.clone(), a.fs(), abs.to_path_buf());
         std::thread::spawn(move || {
             let dir = if abs.is_dir() {
                 rel.clone()
@@ -80,87 +74,9 @@ impl Engine {
             if let Err(e) = client.call("vfs/refresh", params) {
                 eprintln!("nuvolo: vfs/refresh: {e}");
             }
-            if pinned {
-                read_all(&abs, workers);
-            }
         });
         if pinned {
             self.sync_offline(i);
         }
-    }
-
-    /// Refreshes every pinned folder from the cloud and re-reads it, keeping it in the cache.
-    // ponytail: keeping pinned files in the VFS cache relies on re-reading them hourly so the
-    // LRU cache keeps them; a cache smaller than the pinned set will still evict (the offline
-    // copy is unaffected). Upgrade: per-file pin support in rclone.
-    pub fn refresh_pins(&self) {
-        let jobs: Vec<(String, String, PathBuf)> = self
-            .cfg
-            .accounts
-            .iter()
-            .filter(|a| a.background_sync)
-            .flat_map(|a| a.modes.iter().filter(|(_, m)| **m == Mode::Pinned).map(move |(p, _)| (a.fs(), p.clone(), a.mount.join(p))))
-            .collect();
-        if jobs.is_empty() {
-            return;
-        }
-        let (client, workers) = (self.client.clone(), self.cfg.transfers);
-        std::thread::spawn(move || {
-            for (fs_, rel, abs) in jobs {
-                let mut params = json!({ "fs": fs_, "recursive": "true" });
-                if !rel.is_empty() {
-                    params["dir"] = json!(rel);
-                }
-                let _ = client.call("vfs/refresh", params);
-                read_all(&abs, workers);
-            }
-        });
-    }
-}
-
-/// Reads `path` through the mount in the background, which pulls it into the VFS cache.
-pub fn hydrate(path: PathBuf, workers: u32) {
-    std::thread::spawn(move || read_all(&path, workers));
-}
-
-/// Reads every file under `root` with `workers` parallel readers, so pinning a folder
-/// downloads as many files at once as rclone is allowed to transfer.
-fn read_all(root: &Path, workers: u32) {
-    let mut files = Vec::new();
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(d) = dirs.pop() {
-        let Ok(meta) = fs::symlink_metadata(&d) else { continue };
-        if meta.is_file() {
-            files.push(d);
-        } else if meta.is_dir() {
-            dirs.extend(fs::read_dir(&d).into_iter().flatten().flatten().map(|e| e.path()));
-        }
-    }
-    let queue = std::sync::Mutex::new(files);
-    std::thread::scope(|s| {
-        for _ in 0..workers.max(1) {
-            s.spawn(|| loop {
-                let Some(f) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop() else { break };
-                if let Ok(mut file) = fs::File::open(&f) {
-                    let _ = io::copy(&mut file, &mut io::sink());
-                }
-            });
-        }
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn read_all_reads_every_file_in_parallel() {
-        let dir = std::env::temp_dir().join(format!("nuvolo-test-{}", std::process::id()));
-        fs::create_dir_all(dir.join("a/b")).unwrap();
-        for f in ["x", "a/y", "a/b/z"] {
-            fs::write(dir.join(f), b"data").unwrap();
-        }
-        read_all(&dir, 3); // must terminate and not panic
-        fs::remove_dir_all(dir).unwrap();
     }
 }

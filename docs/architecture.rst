@@ -80,7 +80,15 @@ symlink ``~/.cache/nuvolo/offline/<remote>`` points there, so rclone's sync stat
 After each mount and every 10 minutes, ``offline.rs`` first moves anything under the mount
 that is not pinned into the drive (files written while it was not mounted, or copies that
 are no longer pinned), then syncs each pinned folder with ``sync/bisync`` and each pinned
-file with two ``operations/copyfile`` calls, the newer copy winning. Before moving anything,
+file group (the pinned files of one folder) with ``sync/bisync`` limited by a filters file.
+Conflicts follow the ``conflicts`` setting; bisync names a kept loser ``name.ext.conflict1``,
+which Nuvolo renames to ``name (conflict 1).ext`` in folders. Rules always go in a filters
+file: ``_filter`` and ``_config`` on ``sync/bisync`` change more than they say. A lock left by
+an interrupted sync is removed and the sync retried; after a critical error the pair starts
+afresh (a merge that deletes nothing). An offline copy found empty is refilled from the cloud,
+since bisync will not sync from an empty folder.
+
+Before moving anything,
 it checks that the mount really is up (a different device), so it never copies a folder
 onto itself.
 
@@ -102,10 +110,10 @@ Known limitations
 * **Freeing cache space is not immediate.** rclone cannot evict a single file from the
   VFS cache, so *Free Local Cache* only unpins the file. rclone's LRU cleaner removes it
   once it is past the cache's maximum age, or when the cache needs the space.
-* **Offline files are stored twice**: the offline copy, and the VFS cache the live mount
-  reads from. Pinned files are read again every hour to keep them in the cache; if the cache
-  is smaller than all pinned folders together, the live mount may need the network for
-  some of them (the offline copy is unaffected).
+* **Pinned files are read through the mount while it is up.** Opening one fetches it from
+  the cloud into the on-demand cache, like any other file. If the network drops while the
+  drive stays mounted, pinned files not in that cache cannot be opened until it returns or
+  Nuvolo restarts (the offline copies show whenever the drive is not mounted).
 * **Pause is a bandwidth limit.** rclone has no pause command, so Pause All limits
   bandwidth to 1 byte/s.
 * **Conflicts.** Through the mount, the last write wins. Offline copies keep both versions

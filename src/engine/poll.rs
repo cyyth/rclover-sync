@@ -98,11 +98,9 @@ impl Engine {
             .unwrap_or_default();
         let changed = now.symmetric_difference(&self.syncing).cloned().collect();
         self.syncing = now;
-        if self.ticks % 3600 == 0 {
-            self.refresh_pins();
-        }
         if self.ticks % 600 == 0 {
-            for i in 0..self.cfg.accounts.len() {
+            let due: Vec<usize> = (0..self.cfg.accounts.len()).filter(|&i| self.cfg.accounts[i].background_sync).collect();
+            for i in due {
                 self.sync_offline(i);
             }
         }
