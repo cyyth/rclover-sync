@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           nuvolo
-Version:        0.2.3
+Version:        0.2.4
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -42,6 +42,10 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
 
 %changelog
+* Fri Nov 20 2026 Thanapong Chuangyanyong - 0.2.4-1
+- Fix rclone dying immediately after startup: spawn rclone rcd from a dedicated long-lived
+  background thread so PR_SET_PDEATHSIG does not fire when a short-lived worker exits
+
 * Fri Nov 20 2026 Thanapong Chuangyanyong - 0.2.3-1
 - Data safety: no-skip stray rescue copy, home-folder crash recovery for link/unlink,
   vfs/queue upload tracking with bounded retry, non-aborting stray errors, excluded-root

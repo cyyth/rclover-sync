@@ -190,10 +190,7 @@ impl Engine {
         let port = self.cfg.rc_port;
         let cache_dir = self.cache_dir.clone();
         let tx = self.done_tx.clone();
-        std::thread::spawn(move || {
-            // Drop any previous Rcd off the GTK thread (Drop waits for unmountall + exit).
-            drop(old);
-            let res = Rcd::spawn(port, &cache_dir).map_err(|e| format!("could not start rclone: {e}"));
+        Rcd::spawn_async(old, port, cache_dir, move |res| {
             let _ = tx.send(Done::RcloneReady(gen, res));
         });
     }

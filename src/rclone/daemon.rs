@@ -6,8 +6,10 @@ use serde_json::json;
 use std::io::{self, Read};
 use std::net::TcpListener;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Minimum rclone version required for bisync conflict/recovery options.
@@ -104,6 +106,33 @@ impl Rcd {
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+
+    /// Drops `old` (if any) and spawns a new `rclone rcd` on a dedicated long-lived spawner
+    /// thread, then passes the result to `done`.
+    ///
+    /// Using one persistent thread (instead of a short-lived `std::thread::spawn`) is required
+    /// on Linux because `PR_SET_PDEATHSIG` fires when the *spawning thread* exits, not when the
+    /// process exits.
+    pub fn spawn_async(old: Option<Rcd>, preferred_port: u16, cache_dir: PathBuf, done: impl FnOnce(Result<Rcd, String>) + Send + 'static) {
+        static SPAWNER: OnceLock<Sender<Box<dyn FnOnce() + Send>>> = OnceLock::new();
+        let tx = SPAWNER.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            std::thread::Builder::new()
+                .name("rclone-spawner".into())
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        job();
+                    }
+                })
+                .expect("spawn rclone-spawner thread");
+            tx
+        });
+        let _ = tx.send(Box::new(move || {
+            drop(old);
+            let res = Rcd::spawn(preferred_port, &cache_dir).map_err(|e| format!("could not start rclone: {e}"));
+            done(res);
+        }));
+    }
 }
 
 impl Drop for Rcd {
@@ -160,5 +189,28 @@ mod tests {
         assert_eq!(parse_version("v1.66.0-beta.1234"), Some((1, 66, 0)));
         assert_eq!(parse_version("1.67"), Some((1, 67, 0)));
         assert_eq!(parse_version("unknown"), None);
+    }
+
+    #[test]
+    fn spawn_async_keeps_rclone_alive() {
+        // Skip in minimal build containers where rclone is not installed.
+        if Command::new("rclone").arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nuvolo-rcd-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (tx, rx) = mpsc::channel();
+        Rcd::spawn_async(None, 0, dir.clone(), move |res| {
+            let _ = tx.send(res);
+        });
+        let mut rcd = rx.recv_timeout(Duration::from_secs(12)).expect("spawn_async replied").expect("rclone started");
+        // Previously, PR_SET_PDEATHSIG killed rclone as soon as the short-lived spawn thread exited.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(rcd.alive(), "rclone must stay alive after spawn_async completes");
+        rcd.client
+            .call_local("options/set", json!({ "main": { "Transfers": 4, "Checkers": 8, "BufferSize": 33554432u64 } }))
+            .expect("options/set with BufferSize succeeds");
+        drop(rcd);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
