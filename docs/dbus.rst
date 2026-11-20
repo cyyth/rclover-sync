@@ -25,6 +25,11 @@ Methods
 ``GetStates(as paths) → a{ss}``
    The state of each path.
 
+``GetStatesWithTypes(a(sb) entries) → a{ss}``
+   The state of each ``(path, is_directory)`` entry. Because the caller supplies whether
+   each path is a directory, Nuvolo answers from its in-memory state and local cache without
+   reading or stating the FUSE mount.
+
 ``GetDirStates(s dir) → a{ss}``
    The state of every entry in ``dir``, keyed by absolute path. Clients should call this
    once per directory and cache the result.
