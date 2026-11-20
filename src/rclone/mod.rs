@@ -15,6 +15,6 @@ mod mount;
 
 pub use bisync::{bisync, Scope};
 pub use client::Client;
-pub use daemon::Rcd;
+pub use daemon::{Rcd, RcloneCaps};
 pub use links::{public_link, web_url};
-pub use mount::{is_dead_mount, lazy_unmount, mount, mounted_paths};
+pub use mount::{canonical_mount_path, is_mounted_path, lazy_unmount, mount, mounted_paths, probe_mount, MountHealth};

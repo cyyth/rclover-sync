@@ -8,16 +8,33 @@ use std::time::Duration;
 pub struct Client {
     pub(super) url: String,
     pub(super) auth: String,
+    pub(super) agent: ureq::Agent,
 }
 
 impl Client {
+    pub(super) fn new(url: String, auth: String) -> Self {
+        Client {
+            url,
+            auth,
+            agent: ureq::AgentBuilder::new().build(),
+        }
+    }
+
+    /// Short timeout (3 s) for local rc calls (stats, health, control, config).
+    pub fn call_local(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_for(method, params, Duration::from_secs(3))
+    }
+
+    /// Default timeout (60 s) for rc calls that may wait on the cloud.
     pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         self.call_for(method, params, Duration::from_secs(60))
     }
 
-    /// Like [`Client::call`], for jobs that legitimately run long (a two-way sync).
+    /// Like [`Client::call`], for jobs with an explicit timeout (e.g. mount, unmount, bisync).
     pub fn call_for(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
-        let resp = ureq::post(&format!("{}/{method}", self.url))
+        let resp = self
+            .agent
+            .post(&format!("{}/{method}", self.url))
             .timeout(timeout)
             .set("Authorization", &self.auth)
             .send_json(params);

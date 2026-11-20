@@ -132,11 +132,18 @@ impl Ui {
     }
 
     pub(super) fn undo_home(self: &Rc<Self>, home: &Path, mount: &Path) {
-        let res = homedirs::undo(home, mount, &homedirs::jobs_root());
-        self.rebuild_home();
-        self.toast(&match res {
-            Ok(()) => format!("{} is back as it was", home.display()),
-            Err(e) => explain(&format!("Could not undo: {e}")),
+        let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
+        let jobs = homedirs::jobs_root();
+        glib::spawn_future_local(async move {
+            let h = home.clone();
+            let res = gtk::gio::spawn_blocking(move || homedirs::undo(&h, &mount, &jobs).map_err(|e| e.to_string()))
+                .await
+                .unwrap_or_else(|_| Err("undo crashed".to_owned()));
+            ui.rebuild_home();
+            ui.toast(&match res {
+                Ok(()) => format!("{} is back as it was", home.display()),
+                Err(e) => explain(&format!("Could not undo: {e}")),
+            });
         });
     }
 
@@ -193,7 +200,7 @@ impl Ui {
                 ui.rebuild_home();
                 return ui.toast(&explain(&format!("Could not move it back: {e}")));
             }
-            ui.start_home(home.clone(), mount.clone(), homedirs::Job { op: Op::Unlink, backup: None, error: None });
+            ui.start_home(home.clone(), mount.clone(), homedirs::Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), error: None });
         });
         d.present(Some(&self.window));
     }

@@ -30,10 +30,17 @@ impl Ui {
     pub(super) fn load_folders(self: &Rc<Self>) {
         let job = {
             let e = self.e.borrow();
-            e.cfg.accounts.get(self.acct.get()).map(|a| (e.client.clone(), a.fs()))
+            e.client
+                .clone()
+                .and_then(|c| e.cfg.accounts.get(self.acct.get()).map(|a| (c, a.fs())))
         };
         self.folders.remove_all();
-        let Some((client, fs_)) = job else { return };
+        let Some((client, fs_)) = job else {
+            if self.e.borrow().rclone_starting {
+                self.folders.append(&placeholder("Starting rclone…"));
+            }
+            return;
+        };
         self.folders.append(&placeholder("Loading…"));
         let ui = self.clone();
         let acct = self.acct.get();

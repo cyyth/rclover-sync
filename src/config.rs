@@ -119,6 +119,18 @@ impl Account {
             p = p.rsplit_once('/').map_or("", |(parent, _)| parent);
         }
     }
+
+    /// Nearest strict ancestor of `rel` that is [`Mode::Excluded`], if any.
+    pub fn excluded_ancestor(&self, rel: &str) -> Option<String> {
+        let mut p = rel.trim_matches('/');
+        while !p.is_empty() {
+            p = p.rsplit_once('/').map_or("", |(parent, _)| parent);
+            if self.modes.get(p) == Some(&Mode::Excluded) {
+                return Some(p.to_owned());
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -199,6 +211,9 @@ mod tests {
         assert!(a.is_mixed("Projects"), "web/node_modules is excluded inside a pinned folder");
         assert!(!a.is_mixed("Projects/web/src"));
         assert!(!a.is_mixed("Documents"));
+        assert_eq!(a.excluded_ancestor("Projects/web/node_modules/pkg"), Some("Projects/web/node_modules".into()));
+        assert_eq!(a.excluded_ancestor("Projects/web/node_modules"), None);
+        assert_eq!(a.excluded_ancestor("Projects/web/src"), None);
         a.modes.insert(String::new(), Mode::Pinned);
         assert_eq!(a.mode_of("Documents/a.txt"), Mode::Pinned);
     }

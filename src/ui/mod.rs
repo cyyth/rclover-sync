@@ -51,6 +51,11 @@ pub fn present(app: &adw::Application, e: &Shared) -> Rc<Ui> {
     ui
 }
 
+/// True while the main window exists and is visible.
+pub fn is_visible() -> bool {
+    UI.with(|u| u.borrow().as_ref().is_some_and(|ui| ui.window.is_visible()))
+}
+
 /// Called every second by the engine tick.
 pub fn refresh() {
     if let Some(ui) = UI.with(|u| u.borrow().clone()) {
