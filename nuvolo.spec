@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           nuvolo
-Version:        0.2.2
+Version:        0.2.3
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -42,6 +42,22 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
 
 %changelog
+* Fri Nov 20 2026 Thanapong Chuangyanyong - 0.2.3-1
+- Data safety: no-skip stray rescue copy, home-folder crash recovery for link/unlink,
+  vfs/queue upload tracking with bounded retry, non-aborting stray errors, excluded-root
+  stray skipping and pin validation
+- Responsiveness and recovery: off-thread rclone startup/restart with port fallback,
+  off-thread mount/unmount/health/options/bwlimit/config/undo, shared HTTP agent with short
+  local timeouts, rclone watchdog, generation-tagged background results, canonical mount
+  paths, and quoted Exec= in autostart desktop entries
+- Offline availability: unmount after 15 s grace period on network drop to expose offline
+  copies; timeout-bounded FUSE health probe handling EIO and hangs
+- Speed: VFS/mount tuning, adaptive polling, widget state caching, single-pass conflict
+  tidying and sizing, staggered periodic syncs, thin-LTO release profile, per-account cache
+  budget with free-space guard, sequenced sync_now, rclone error log, and rclone >= 1.66 check
+- GNOME Files: stop trashing into .Trash-<uid> inside the cloud; add GetStatesWithTypes
+  D-Bus method for zero-mount emblem lookups
+
 * Wed Nov 18 2026 Thanapong Chuangyanyong - 0.2.2-1
 - Storage card with two bars: Offline folders (always kept) and the on-demand cache
 - Conflicts setting (Keep Both by default, Keep the Newer, This Device Wins, Cloud Wins);
