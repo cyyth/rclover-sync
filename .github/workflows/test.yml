@@ -1,0 +1,22 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Install build and test dependencies
+        run: dnf install -y git cargo rust clippy gtk4-devel libadwaita-devel rclone dbus-daemon glib2
+
+      - uses: actions/checkout@v4
+
+      - name: Run tests (unit + e2e)
+        run: cargo test --locked -- --nocapture
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
