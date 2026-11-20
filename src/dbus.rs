@@ -15,6 +15,7 @@ const XML: &str = r#"<node>
   <interface name="io.github.cyythanapong_netizen.Nuvolo1">
     <method name="GetMounts"><arg type="as" direction="out"/></method>
     <method name="GetStates"><arg name="paths" type="as" direction="in"/><arg type="a{ss}" direction="out"/></method>
+    <method name="GetStatesWithTypes"><arg name="entries" type="a(sb)" direction="in"/><arg type="a{ss}" direction="out"/></method>
     <method name="GetDirStates"><arg name="dir" type="s" direction="in"/><arg type="a{ss}" direction="out"/></method>
     <method name="Pin"><arg name="paths" type="as" direction="in"/></method>
     <method name="Unpin"><arg name="paths" type="as" direction="in"/></method>
@@ -56,6 +57,17 @@ fn handle(e: &Shared, conn: &gio::DBusConnection, method: &str, params: glib::Va
         "GetMounts" => {
             let m: Vec<String> = e.borrow().cfg.accounts.iter().map(|a| a.mount.to_string_lossy().into_owned()).collect();
             inv.return_value(Some(&(m,).to_variant()));
+        }
+        "GetStatesWithTypes" => {
+            // The caller already knows which entries are directories, so Nuvolo can answer from
+            // its in-memory config/engine state and local VFS cache without touching the mount.
+            let entries: Vec<(String, bool)> = params.get::<(Vec<(String, bool)>,)>().map(|t| t.0).unwrap_or_default();
+            let e = e.borrow();
+            let map: HashMap<String, String> = entries
+                .iter()
+                .filter_map(|(p, is_dir)| e.state(Path::new(p), *is_dir).map(|s| (p.clone(), s.as_str().to_owned())))
+                .collect();
+            inv.return_value(Some(&(map,).to_variant()));
         }
         "GetStates" | "GetDirStates" => {
             // Looking at files goes through the mount, which can wait on the network: do it
