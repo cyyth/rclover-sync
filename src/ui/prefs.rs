@@ -212,16 +212,25 @@ impl Ui {
             if !id.ends_with(".apps.googleusercontent.com") {
                 return ui.toast("A Google client ID ends in .apps.googleusercontent.com");
             }
+            let Some(client) = ui.e.borrow().client.clone() else {
+                return ui.toast("rclone is still starting; try again in a moment.");
+            };
             let params = json!({
                 "name": remote,
                 "parameters": { "client_id": id, "client_secret": secret.text().trim() },
                 "opt": { "nonInteractive": true },
             });
-            match ui.e.borrow().client.call("config/update", params) {
-                Ok(_) => ui.toast("Saved. Reconnect the account to start using it."),
-                Err(e) => ui.toast(&e),
-            }
-            ui.select_account(ui.acct.get());
+            let ui = ui.clone();
+            glib::spawn_future_local(async move {
+                let res = gio::spawn_blocking(move || client.call_local("config/update", params))
+                    .await
+                    .unwrap_or_else(|_| Err("config update crashed".to_owned()));
+                match res {
+                    Ok(_) => ui.toast("Saved. Reconnect the account to start using it."),
+                    Err(e) => ui.toast(&e),
+                }
+                ui.select_account(ui.acct.get());
+            });
         });
         d.present(Some(&self.window));
     }
@@ -273,8 +282,43 @@ fn set_autostart(on: bool) -> std::io::Result<()> {
         &path,
         format!(
             "[Desktop Entry]\nType=Application\nName=Nuvolo\nComment=Mount cloud drives at login\nExec={} --gapplication-service\nIcon={}\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
-            exe.display(),
+            desktop_exec_quote(&exe),
             crate::APP_ID
         ),
     )
+}
+
+/// Quotes and escapes an executable path for a `.desktop` file's `Exec=` key per the
+/// Freedesktop Desktop Entry Specification (escaping `\`, `"`, `` ` ``, `$`, and `%` as `%%`).
+fn desktop_exec_quote(exe: &std::path::Path) -> String {
+    let raw = exe.to_string_lossy();
+    let mut out = String::with_capacity(raw.len() + 2);
+    out.push('"');
+    for c in raw.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '`' => out.push_str("\\`"),
+            '$' => out.push_str("\\$"),
+            '%' => out.push_str("%%"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn quotes_desktop_exec_paths() {
+        assert_eq!(desktop_exec_quote(Path::new("/usr/bin/nuvolo")), "\"/usr/bin/nuvolo\"");
+        assert_eq!(
+            desktop_exec_quote(Path::new("/home/me/My Apps/nuvolo 100% \"beta\"\\bin")),
+            "\"/home/me/My Apps/nuvolo 100%% \\\"beta\\\"\\\\bin\""
+        );
+    }
 }

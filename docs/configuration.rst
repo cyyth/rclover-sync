@@ -37,7 +37,9 @@ Keys
 
 ``cache_max_size_gib``, ``cache_max_age_hours``
    Limits for the on-demand cache (rclone's VFS cache): the space for opened files, on top of
-   Offline folders, which do not count against it. Applied on the next remount.
+   Offline folders, which do not count against it. When multiple accounts are configured, the
+   size limit is divided across them, and rclone also keeps at least 1 GiB free on the cache
+   disk (when supported by the installed rclone). Applied on the next remount.
 
 ``no_modtime``
    Passes ``--no-modtime`` to the mount, which saves API calls on large trees.
@@ -57,4 +59,5 @@ Keys
    Folder paths relative to the remote root, each mapped to ``on-demand``, ``pinned``
    or ``excluded``. The empty key ``""`` is the remote root.
 
-Cache data is kept in ``~/.cache/nuvolo``.
+Cache data and rclone's error log (``rclone.log``) are kept in ``~/.cache/nuvolo``. Nuvolo
+requires rclone 1.66 or newer.

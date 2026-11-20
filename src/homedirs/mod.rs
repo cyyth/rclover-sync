@@ -16,7 +16,7 @@
 mod copy;
 mod runner;
 
-pub use copy::{merge_entry, merge_into};
+pub use copy::{merge_entry_with, merge_into, CopyPolicy};
 pub use runner::{resume_all, run};
 
 use gtk::glib::{self, UserDirectory};
@@ -46,9 +46,15 @@ pub fn cloud_path(mount: &Path, home: &Path) -> PathBuf {
     mount.join(home.file_name().unwrap_or_default())
 }
 
+/// True if `target` points inside `mount` (comparing both raw and canonicalized mount paths).
+fn points_into(target: &Path, mount: &Path) -> bool {
+    target.starts_with(mount)
+        || crate::rclone::canonical_mount_path(target).starts_with(crate::rclone::canonical_mount_path(mount))
+}
+
 /// True if `home` is a symlink into `mount`.
 pub fn is_linked(home: &Path, mount: &Path) -> bool {
-    fs::read_link(home).is_ok_and(|t| t.starts_with(mount))
+    fs::read_link(home).is_ok_and(|t| points_into(&t, mount))
 }
 
 /// Where originals are kept: ~/.local/share/nuvolo/backups (same filesystem as ~).
@@ -82,6 +88,9 @@ pub struct Job {
     pub op: Op,
     /// The original folder, for [`Op::Link`].
     pub backup: Option<PathBuf>,
+    /// The mount point this move targets, so recovery works even if `home` is missing.
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
     /// Why the last attempt stopped, if it failed.
     pub error: Option<String>,
 }
@@ -122,12 +131,22 @@ pub enum Status {
 pub fn status(home: &Path, mount: &Path, jobs: &Path) -> Status {
     let job = read_job(jobs, home);
     match fs::read_link(home) {
-        Ok(t) if t.starts_with(mount) => job.map_or(Status::Linked, Status::Unfinished),
+        Ok(t) if points_into(&t, mount) => job.map_or(Status::Linked, Status::Unfinished),
         Ok(t) => Status::Elsewhere(t),
         Err(_) => {
-            // No link: either the move never got as far as linking or a move back completed.
-            // Both leave a real folder, so a job file is stale.
-            if job.is_some() {
+            if let Some(j) = job {
+                let missing_home = home.symlink_metadata().is_err();
+                let recoverable = match j.op {
+                    // Crashed between rename(home, backup) and creating the symlink.
+                    Op::Link => missing_home && j.backup.as_deref().is_some_and(Path::is_dir),
+                    // Crashed between removing the symlink and renaming staging to home.
+                    Op::Unlink => missing_home && staging(home).is_dir(),
+                };
+                if recoverable {
+                    return Status::Unfinished(j);
+                }
+                // Otherwise a real folder is in place: either the move never got as far as
+                // linking or a move back completed, so the job file is stale.
                 clear_job(jobs, home);
             }
             Status::Local
@@ -146,7 +165,7 @@ pub fn link(home: &Path, mount: &Path, backups: &Path, jobs: &Path) -> io::Resul
     let backup = backup_path(backups, home);
     fs::create_dir_all(backups)?;
     // Recorded first, so a crash at any later point is seen as an unfinished move.
-    write_job(jobs, home, &Job { op: Op::Link, backup: Some(backup.clone()), error: None })?;
+    write_job(jobs, home, &Job { op: Op::Link, backup: Some(backup.clone()), mount: Some(mount.to_path_buf()), error: None })?;
     // Same filesystem (both in ~), so this is an atomic rename, not a copy.
     if let Err(e) = fs::rename(home, &backup) {
         clear_job(jobs, home);
@@ -165,7 +184,7 @@ pub fn start_unlink(home: &Path, mount: &Path, jobs: &Path) -> io::Result<()> {
     if !is_linked(home, mount) {
         return Err(io::Error::other(format!("{} is not stored in the cloud", home.display())));
     }
-    write_job(jobs, home, &Job { op: Op::Unlink, backup: None, error: None })
+    write_job(jobs, home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.to_path_buf()), error: None })
 }
 
 fn staging(home: &Path) -> PathBuf {
@@ -180,13 +199,23 @@ pub fn finish(home: &Path, mount: &Path, job: &Job, copied: &AtomicUsize) -> io:
     match job.op {
         Op::Link => {
             let backup = job.backup.as_deref().ok_or_else(|| io::Error::other("the job file names no backup"))?;
+            fs::create_dir_all(&cloud)?;
+            // Recover from a crash between rename(home, backup) and creating the symlink.
+            if home.symlink_metadata().is_err() {
+                std::os::unix::fs::symlink(&cloud, home)?;
+            }
             merge_into(backup, &cloud, copied)
         }
         Op::Unlink => {
             let staging = staging(home);
             fs::create_dir_all(&staging)?;
-            merge_into(&cloud, &staging, copied)?;
-            fs::remove_file(home)?; // the symlink only
+            if cloud.is_dir() {
+                merge_into(&cloud, &staging, copied)?;
+            }
+            match fs::remove_file(home) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
             fs::rename(&staging, home)
         }
     }
@@ -208,10 +237,16 @@ pub fn undo(home: &Path, mount: &Path, jobs: &Path) -> io::Result<()> {
             }
             fs::rename(&backup, home)?;
         }
-        Op::Unlink => match fs::remove_dir_all(staging(home)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        },
+        Op::Unlink => {
+            // Recover from a crash after removing the symlink before renaming staging.
+            if home.symlink_metadata().is_err() {
+                std::os::unix::fs::symlink(cloud_path(mount, home), home)?;
+            }
+            match fs::remove_dir_all(staging(home)) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
     }
     clear_job(jobs, home);
     Ok(())
@@ -240,7 +275,7 @@ pub fn adopt_old_moves(jobs: &Path, backups: &Path) {
             .max();
         if let Some(backup) = newest {
             eprintln!("nuvolo: checking that {} was fully copied from {}", home.display(), backup.display());
-            let _ = write_job(jobs, &home, &Job { op: Op::Link, backup: Some(backup), error: None });
+            let _ = write_job(jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: None, error: None });
         }
     }
 }
@@ -297,6 +332,69 @@ mod tests {
         undo(&home, &mount, &jobs).unwrap();
         assert_eq!(status(&home, &mount, &jobs), Status::Local);
         assert_eq!(fs::read_to_string(home.join("cat.jpg")).unwrap(), "meow");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn link_crash_before_symlink_is_recoverable() {
+        let root = tmp("crash-link");
+        let (home, mount, jobs, backups) = (root.join("Documents"), root.join("mount"), root.join("jobs"), root.join("backups"));
+        fs::create_dir_all(&mount).unwrap();
+        let backup = backups.join("Documents-20260101-000000");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("doc.txt"), "important").unwrap();
+        // Simulate crash after rename(home, backup) and before creating the symlink: `home` is missing.
+        write_job(&jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: Some(mount.clone()), error: None }).unwrap();
+
+        let Status::Unfinished(job) = status(&home, &mount, &jobs) else {
+            panic!("crash between rename and symlink must stay Unfinished");
+        };
+        assert!(read_job(&jobs, &home).is_some(), "job file must not be cleared");
+        // Resuming recreates the symlink and copies the files.
+        finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
+        assert!(is_linked(&home, &mount));
+        assert_eq!(fs::read_to_string(home.join("doc.txt")).unwrap(), "important");
+
+        // Also test undo from the same crash point.
+        fs::remove_file(&home).unwrap();
+        undo(&home, &mount, &jobs).unwrap();
+        assert_eq!(status(&home, &mount, &jobs), Status::Local);
+        assert_eq!(fs::read_to_string(home.join("doc.txt")).unwrap(), "important");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unlink_crash_before_rename_is_recoverable() {
+        let root = tmp("crash-unlink");
+        let (home, mount, jobs) = (root.join("Music"), root.join("mount"), root.join("jobs"));
+        let cloud = cloud_path(&mount, &home);
+        fs::create_dir_all(&cloud).unwrap();
+        fs::write(cloud.join("song.flac"), "audio").unwrap();
+        let stage = staging(&home);
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("song.flac"), "audio").unwrap();
+        // Simulate crash after removing the symlink and before renaming staging to home.
+        write_job(&jobs, &home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), error: None }).unwrap();
+
+        let Status::Unfinished(job) = status(&home, &mount, &jobs) else {
+            panic!("crash between remove_file and rename(staging, home) must stay Unfinished");
+        };
+        assert!(read_job(&jobs, &home).is_some(), "job file must not be cleared");
+
+        // Undo restores the symlink and cleans up staging.
+        undo(&home, &mount, &jobs).unwrap();
+        assert!(is_linked(&home, &mount));
+        assert!(!stage.exists());
+
+        // Now test finish from the same crash point.
+        fs::remove_file(&home).unwrap();
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("song.flac"), "audio").unwrap();
+        write_job(&jobs, &home, &job).unwrap();
+        finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
+        assert!(!fs::symlink_metadata(&home).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(home.join("song.flac")).unwrap(), "audio");
+        assert_eq!(status(&home, &mount, &jobs), Status::Local);
         let _ = fs::remove_dir_all(root);
     }
 }

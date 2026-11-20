@@ -207,6 +207,10 @@ other rclone user. Nuvolo shows a banner when that is the case. Create a *Deskto
 OAuth client in Google Cloud Console, enter it with **Use Custom Client ID**, then use
 **Reconnect Account** in Preferences.
 
+For faster uploads of large files to Google Drive, you can also raise ``chunk_size`` on your
+remote from rclone's default ``8M`` to ``32M`` or ``64M`` via ``rclone config`` (advanced
+settings).
+
 Deleting files
 --------------
 

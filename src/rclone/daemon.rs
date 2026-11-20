@@ -4,26 +4,57 @@ use super::Client;
 use base64::Engine as _;
 use serde_json::json;
 use std::io::{self, Read};
+use std::net::TcpListener;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Minimum rclone version required for bisync conflict/recovery options.
+const MIN_RCLONE: (u32, u32, u32) = (1, 66, 0);
+
+/// Feature flags detected from the running rclone version.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RcloneCaps {
+    /// `--vfs-cache-min-free-space` / `vfsOpt.CacheMinFreeSpace` (rclone >= 1.67).
+    pub has_min_free_space: bool,
+}
+
 pub struct Rcd {
     child: Child,
     pub client: Client,
+    pub caps: RcloneCaps,
 }
 
 impl Rcd {
     /// Starts `rclone rcd` on localhost with a random password (passed via the environment,
-    /// so it never shows up in `ps`). Waits up to 10 s for it to answer; needs no network.
-    pub fn spawn(port: u16, cache_dir: &Path) -> io::Result<Rcd> {
+    /// so it never shows up in `ps`). Falls back to a free ephemeral port if `preferred_port`
+    /// is occupied. Waits up to 10 s for it to answer; needs no network.
+    pub fn spawn(preferred_port: u16, cache_dir: &Path) -> io::Result<Rcd> {
+        std::fs::create_dir_all(cache_dir)?;
+        let port = pick_port(preferred_port)?;
+        match Self::spawn_on(port, cache_dir) {
+            Ok(rcd) => Ok(rcd),
+            Err(_) if port == preferred_port => {
+                // Race on the preferred port: retry once on an OS-assigned free port.
+                let fallback = pick_free_port()?;
+                eprintln!("nuvolo: port {preferred_port} was busy, retrying rclone on port {fallback}");
+                Self::spawn_on(fallback, cache_dir)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn spawn_on(port: u16, cache_dir: &Path) -> io::Result<Rcd> {
         let pass = random_token()?;
+        let log_file = cache_dir.join("rclone.log");
         let mut cmd = Command::new("rclone");
         cmd.arg("rcd")
             .arg("--rc-user=nuvolo")
             .arg(format!("--rc-addr=127.0.0.1:{port}"))
             .arg(format!("--cache-dir={}", cache_dir.display()))
+            .arg(format!("--log-file={}", log_file.display()))
+            .arg("--log-level=ERROR")
             .env("RCLONE_RC_PASS", &pass)
             .stdin(Stdio::null())
             .stdout(Stdio::null());
@@ -39,7 +70,8 @@ impl Rcd {
         }
         let child = cmd.spawn()?;
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("nuvolo:{pass}"));
-        let mut rcd = Rcd { child, client: Client { url: format!("http://127.0.0.1:{port}"), auth: format!("Basic {auth}") } };
+        let client = Client::new(format!("http://127.0.0.1:{port}"), format!("Basic {auth}"));
+        let mut rcd = Rcd { child, client, caps: RcloneCaps::default() };
         let start = Instant::now();
         while rcd.client.call_for("rc/noop", json!({}), Duration::from_secs(2)).is_err() {
             if let Some(status) = rcd.child.try_wait()? {
@@ -49,6 +81,21 @@ impl Rcd {
                 return Err(io::Error::other("rclone rcd did not answer within 10 s"));
             }
             std::thread::sleep(Duration::from_millis(100));
+        }
+        if let Ok(v) = rcd.client.call_local("core/version", json!({})) {
+            if let Some(ver_str) = v["version"].as_str() {
+                if let Some(ver) = parse_version(ver_str) {
+                    if ver < MIN_RCLONE {
+                        return Err(io::Error::other(format!(
+                            "rclone {ver_str} is too old; Nuvolo requires rclone {}.{}.{} or newer",
+                            MIN_RCLONE.0, MIN_RCLONE.1, MIN_RCLONE.2
+                        )));
+                    }
+                    rcd.caps = RcloneCaps {
+                        has_min_free_space: ver >= (1, 67, 0),
+                    };
+                }
+            }
         }
         Ok(rcd)
     }
@@ -72,8 +119,46 @@ impl Drop for Rcd {
     }
 }
 
+fn pick_port(preferred: u16) -> io::Result<u16> {
+    if preferred != 0 && TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
+        return Ok(preferred);
+    }
+    let free = pick_free_port()?;
+    if preferred != 0 {
+        eprintln!("nuvolo: port {preferred} is in use, using port {free} for rclone");
+    }
+    Ok(free)
+}
+
+fn pick_free_port() -> io::Result<u16> {
+    Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
+}
+
+/// Parses an rclone version string like `"v1.75.2"` or `"v1.66.0-beta.1"` into `(major, minor, patch)`.
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let core = s.trim().trim_start_matches('v').split('-').next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
 fn random_token() -> io::Result<String> {
     let mut buf = [0u8; 24];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
     Ok(buf.iter().fold(String::new(), |s, b| s + &format!("{b:02x}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rclone_versions() {
+        assert_eq!(parse_version("v1.75.2"), Some((1, 75, 2)));
+        assert_eq!(parse_version("v1.66.0-beta.1234"), Some((1, 66, 0)));
+        assert_eq!(parse_version("1.67"), Some((1, 67, 0)));
+        assert_eq!(parse_version("unknown"), None);
+    }
 }

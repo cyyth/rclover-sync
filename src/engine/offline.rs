@@ -26,44 +26,18 @@
 use super::{Done, Engine};
 use crate::config::{Account, Config, ConflictPolicy, Mode};
 use crate::errors::explain;
-use crate::homedirs::merge_entry;
+use crate::homedirs::{merge_entry_with, CopyPolicy};
 use crate::notify;
 use crate::rclone::{self, Client, Scope};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 
 impl Engine {
-    /// Opens the mount folder before the mount covers it (a no-op once held, or if the mount
-    /// is already up), and points `~/.cache/nuvolo/offline/<remote>` at it.
-    pub(super) fn hold_offline_dir(&mut self, i: usize) {
-        let a = &self.cfg.accounts[i];
-        if self.offline_dirs.contains_key(&i) || rclone::mounted_paths().contains(&a.mount) {
-            return;
-        }
-        let link = self.offline_link(&a.remote);
-        let held = fs::File::open(&a.mount).and_then(|f| {
-            fs::create_dir_all(link.parent().unwrap_or(Path::new("/")))?;
-            match fs::remove_file(&link) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
-            }
-            std::os::unix::fs::symlink(format!("/proc/{}/fd/{}", std::process::id(), f.as_raw_fd()), &link)?;
-            Ok(f)
-        });
-        match held {
-            Ok(f) => {
-                self.offline_dirs.insert(i, f);
-            }
-            Err(e) => eprintln!("nuvolo: no offline copies for {}: {e}", a.mount.display()),
-        }
-    }
-
-    fn offline_link(&self, remote: &str) -> PathBuf {
+    pub(super) fn offline_link(&self, remote: &str) -> PathBuf {
         self.cache_dir.join("offline").join(remote)
     }
 
@@ -97,23 +71,28 @@ impl Engine {
         if !self.offline_dirs.contains_key(&i) || self.offline_running.contains(&i) || !self.is_mounted(i) {
             return;
         }
+        let Some(client) = self.client.clone() else { return };
         let a = self.cfg.accounts[i].clone();
+        let pinned = pinned_roots(&a);
+        let excludes = pinned.iter().map(|rel| excludes_below(&self.cfg, &a, rel)).collect();
+        let excluded = excluded_roots(&a);
         let job = OfflineJob {
-            client: self.client.clone(),
+            client,
             under: self.offline_link(&a.remote),
             workdir: self.cache_dir.join("bisync"),
-            pinned: pinned_roots(&a),
-            excludes: pinned_roots(&a).iter().map(|rel| excludes_below(&self.cfg, &a, rel)).collect(),
+            pinned,
+            excluded,
+            excludes,
             policy: self.cfg.conflicts,
             force,
             account: a,
         };
         self.offline_running.insert(i);
+        let gen = self.rclone_gen;
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
-            let res = job.run();
-            let bytes = job.pinned.iter().map(|rel| du(&job.under.join(rel))).sum();
-            let _ = tx.send(Done::Synced(i, res, bytes));
+            let (res, bytes) = job.run();
+            let _ = tx.send(Done::Synced(gen, i, res, bytes));
         });
     }
 
@@ -156,6 +135,8 @@ struct OfflineJob {
     under: PathBuf,
     workdir: PathBuf,
     pinned: Vec<String>,
+    /// Excluded roots, skipped by stray rescue.
+    excluded: Vec<String>,
     /// Exclude rules for each entry of `pinned`.
     excludes: Vec<Vec<String>>,
     policy: ConflictPolicy,
@@ -165,7 +146,9 @@ struct OfflineJob {
 impl OfflineJob {
     /// Moves loose files into the drive, then syncs each pinned folder, then the pinned single
     /// files (grouped by folder). Goes on past a failing folder, and reports the first failure.
-    fn run(&self) -> Result<(), OfflineProblem> {
+    /// Returns the result and the total size of offline copies (measured in the same pass as
+    /// conflict renaming, avoiding a second tree walk).
+    fn run(&self) -> (Result<(), OfflineProblem>, u64) {
         let mount = &self.account.mount;
         let fail = |what: &str, raw: String| {
             eprintln!("nuvolo: offline copy of {what}: {raw}");
@@ -174,9 +157,13 @@ impl OfflineJob {
                 can_force: raw.contains("too many deletes") || raw.contains("all files were changed"),
             }
         };
-        rescue_strays(&self.under, mount, &self.pinned).map_err(|e| fail("files saved while the drive was not mounted", e.to_string()))?;
-        let fs_ = self.account.fs();
         let mut first: Option<OfflineProblem> = None;
+        if let Err(e) = rescue_strays(&self.under, mount, &self.pinned, &self.excluded) {
+            first = Some(fail("files saved while the drive was not mounted", e.to_string()));
+        }
+        let fs_ = self.account.fs();
+        let tidy = self.policy == ConflictPolicy::KeepBoth;
+        let mut total_bytes: u64 = 0;
         let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (rel, excludes) in self.pinned.iter().zip(&self.excludes) {
             let local = if rel.is_empty() { self.under.clone() } else { self.under.join(rel) };
@@ -188,10 +175,18 @@ impl OfflineJob {
             }
             let res = fs::create_dir_all(&local)
                 .map_err(|e| e.to_string())
-                .and_then(|_| rclone::bisync(&self.client, &local, &format!("{fs_}{rel}"), &self.workdir, Scope::All(excludes), self.policy, self.force))
-                .and_then(|_| tidy_conflicts(&local).map_err(|e| e.to_string()));
-            if let Err(e) = res {
-                first.get_or_insert(fail(if rel.is_empty() { "whole drive" } else { rel }, e));
+                .and_then(|_| rclone::bisync(&self.client, &local, &format!("{fs_}{rel}"), &self.workdir, Scope::All(excludes), self.policy, self.force));
+            match res {
+                Ok(()) => match tidy_and_du(&local, tidy) {
+                    Ok(bytes) => total_bytes += bytes,
+                    Err(e) => {
+                        first.get_or_insert(fail(if rel.is_empty() { "whole drive" } else { rel }, e.to_string()));
+                    }
+                },
+                Err(e) => {
+                    first.get_or_insert(fail(if rel.is_empty() { "whole drive" } else { rel }, e));
+                    total_bytes += du(&local);
+                }
             }
         }
         for (dir, names) in files {
@@ -204,20 +199,32 @@ impl OfflineJob {
             if let Err(e) = res {
                 first.get_or_insert(fail(&names[0], e));
             }
+            for name in &names {
+                total_bytes += du(&local.join(name));
+            }
         }
-        first.map_or(Ok(()), Err)
+        (first.map_or(Ok(()), Err), total_bytes)
     }
 }
 
 /// Gives conflict copies a readable name that keeps the extension, so they open as usual:
 /// bisync's "notes.txt.conflict1" becomes "notes (conflict 1).txt". The next sync passes the
-/// rename on to the cloud.
-fn tidy_conflicts(dir: &Path) -> io::Result<()> {
+/// rename on to the cloud. Also sums file sizes in the same walk so `du` does not traverse
+/// the tree a second time.
+fn tidy_and_du(dir: &Path, tidy: bool) -> io::Result<u64> {
+    let mut bytes = 0u64;
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            tidy_conflicts(&path)?;
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            bytes += tidy_and_du(&path, tidy)?;
+            continue;
+        }
+        if meta.is_file() {
+            bytes += meta.len();
+        }
+        if !tidy {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -234,7 +241,7 @@ fn tidy_conflicts(dir: &Path) -> io::Result<()> {
             .expect("a free name exists");
         fs::rename(&path, target)?;
     }
-    Ok(())
+    Ok(bytes)
 }
 
 /// Bytes of the files under `p` (or of `p` itself), not following links.
@@ -252,6 +259,16 @@ fn pinned_roots(a: &Account) -> Vec<String> {
     pinned
         .iter()
         .filter(|p| !pinned.iter().any(|q| q != *p && inside(p, q)))
+        .map(|p| (*p).clone())
+        .collect()
+}
+
+/// Excluded paths, without those inside another excluded path.
+fn excluded_roots(a: &Account) -> Vec<String> {
+    let excluded: Vec<&String> = a.modes.iter().filter(|(_, m)| **m == Mode::Excluded).map(|(p, _)| p).collect();
+    excluded
+        .iter()
+        .filter(|p| !excluded.iter().any(|q| q != *p && inside(p, q)))
         .map(|p| (*p).clone())
         .collect()
 }
@@ -274,36 +291,37 @@ fn excludes_below(cfg: &Config, a: &Account, root: &str) -> Vec<String> {
     rules
 }
 
-/// Moves into the mount whatever lies under it outside the pinned paths, so it is uploaded.
-/// A name taken in the drive is kept side by side ("name (this device).ext"); a file already
-/// there with the same size is taken as uploaded. Returns how many entries were moved.
-fn rescue_strays(under: &Path, mount: &Path, pinned: &[String]) -> io::Result<usize> {
+/// Moves into the mount whatever lies under it outside the pinned and excluded paths, so it is
+/// uploaded. Always copies (never skips on equal size) so deleting the local stray afterwards
+/// can never lose a different same-size file. Returns how many entries were moved.
+fn rescue_strays(under: &Path, mount: &Path, pinned: &[String], excluded: &[String]) -> io::Result<usize> {
     // Never copy into the folder itself: that is what `mount` is when the mount is not up,
     // and removing the "copied" original would then lose it.
     let dev = |p: &Path| fs::metadata(p).map(|m| m.dev());
     if dev(under)? == dev(mount)? {
         return Err(io::Error::other("the drive is not mounted"));
     }
-    walk_strays(under, mount, "", pinned)
+    walk_strays(under, mount, "", pinned, excluded)
 }
 
-fn walk_strays(under: &Path, mount: &Path, dir: &str, pinned: &[String]) -> io::Result<usize> {
+fn walk_strays(under: &Path, mount: &Path, dir: &str, pinned: &[String], excluded: &[String]) -> io::Result<usize> {
     let mut moved = 0;
     for entry in fs::read_dir(under.join(dir))? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let rel = if dir.is_empty() { name } else { format!("{dir}/{name}") };
-        if pinned.iter().any(|p| inside(&rel, p)) {
-            continue; // an offline copy
+        if pinned.iter().any(|p| inside(&rel, p)) || excluded.iter().any(|ex| inside(&rel, ex)) {
+            continue; // an offline copy or excluded folder
         }
         let is_dir = entry.file_type()?.is_dir();
-        if is_dir && pinned.iter().any(|p| p.starts_with(&format!("{rel}/"))) {
-            moved += walk_strays(under, mount, &rel, pinned)?; // holds an offline copy deeper down
+        let prefix = format!("{rel}/");
+        if is_dir && (pinned.iter().any(|p| p.starts_with(&prefix)) || excluded.iter().any(|ex| ex.starts_with(&prefix))) {
+            moved += walk_strays(under, mount, &rel, pinned, excluded)?; // holds a pinned or excluded path deeper down
             continue;
         }
         let to = mount.join(dir);
         fs::create_dir_all(&to)?;
-        merge_entry(&entry, &to, &AtomicUsize::new(0))?;
+        merge_entry_with(&entry, &to, &AtomicUsize::new(0), CopyPolicy::AlwaysCopy)?;
         if is_dir {
             fs::remove_dir_all(entry.path())?;
         } else {
@@ -339,7 +357,8 @@ mod tests {
         for f in ["notes.txt.conflict1", "sub/Makefile.conflict2", "photo.conflict.jpg", "plain.txt"] {
             fs::write(d.join(f), f).unwrap();
         }
-        tidy_conflicts(&d).unwrap();
+        let bytes = tidy_and_du(&d, true).unwrap();
+        assert!(bytes > 0);
         assert_eq!(fs::read_to_string(d.join("notes (conflict 1).txt")).unwrap(), "notes.txt.conflict1");
         assert!(d.join("sub/Makefile (conflict 2)").exists());
         assert!(d.join("photo.conflict.jpg").exists(), "not a conflict copy");
@@ -351,10 +370,46 @@ mod tests {
     fn strays_refuse_to_move_onto_the_same_disk() {
         // Without a mount, "under" and "mount" are the same folder: nothing may be moved.
         let d = std::env::temp_dir().join(format!("nuvolo-strays-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("loose")).unwrap();
         fs::write(d.join("loose/a.txt"), "keep me").unwrap();
-        assert!(rescue_strays(&d, &d, &[]).is_err());
+        assert!(rescue_strays(&d, &d, &[], &[]).is_err());
         assert_eq!(fs::read_to_string(d.join("loose/a.txt")).unwrap(), "keep me");
         let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn stray_rescue_keeps_same_size_different_file() {
+        let root = std::env::temp_dir().join(format!("nuvolo-stray-same-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (under, mount) = (root.join("under"), root.join("mount"));
+        fs::create_dir_all(&under).unwrap();
+        fs::create_dir_all(&mount).unwrap();
+        // Same name, same 4-byte length, different contents.
+        fs::write(mount.join("a.txt"), "aaaa").unwrap();
+        fs::write(under.join("a.txt"), "bbbb").unwrap();
+        let moved = walk_strays(&under, &mount, "", &[], &[]).unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(fs::read_to_string(mount.join("a.txt")).unwrap(), "aaaa");
+        assert_eq!(fs::read_to_string(mount.join("a (this device).txt")).unwrap(), "bbbb");
+        assert!(!under.join("a.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stray_rescue_skips_excluded_roots() {
+        let root = std::env::temp_dir().join(format!("nuvolo-stray-excl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (under, mount) = (root.join("under"), root.join("mount"));
+        fs::create_dir_all(under.join("Work/build")).unwrap();
+        fs::write(under.join("Work/build/out.bin"), "ignored").unwrap();
+        fs::write(under.join("Work/note.txt"), "rescue me").unwrap();
+        fs::create_dir_all(&mount).unwrap();
+        let moved = walk_strays(&under, &mount, "", &[], &["Work/build".into()]).unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(fs::read_to_string(mount.join("Work/note.txt")).unwrap(), "rescue me");
+        assert!(!mount.join("Work/build").exists());
+        assert!(under.join("Work/build/out.bin").exists());
+        let _ = fs::remove_dir_all(root);
     }
 }

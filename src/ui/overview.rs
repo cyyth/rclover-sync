@@ -4,11 +4,24 @@
 use super::widgets::*;
 use super::Ui;
 use crate::config::Mode;
-use crate::engine::MountState;
+use crate::engine::{MountState, OfflineProblem};
 use crate::errors::{explain, is_offline};
 use adw::prelude::*;
 use gtk::glib;
+use std::cell::RefCell;
 use std::rc::Rc;
+
+#[derive(PartialEq, Eq)]
+struct MountSnapshot {
+    acct: usize,
+    mount_path: String,
+    state: MountState,
+    paused: bool,
+    on_demand: bool,
+    pinned: usize,
+    syncing: bool,
+    problem: Option<OfflineProblem>,
+}
 
 pub(super) struct Overview {
     pub mount_row: adw::ActionRow,
@@ -30,6 +43,7 @@ pub(super) struct Overview {
     stat_errors: gtk::Label,
     stat_errors_sub: gtk::Label,
     recent: gtk::ListBox,
+    last_mount: RefCell<Option<MountSnapshot>>,
 }
 
 impl Overview {
@@ -91,6 +105,7 @@ impl Overview {
             stat_errors,
             stat_errors_sub,
             recent: boxed(),
+            last_mount: RefCell::new(None),
         }
     }
 }
@@ -171,8 +186,24 @@ impl Ui {
     pub(super) fn tick_mount(&self) {
         let (ov, e, i) = (&self.ov, self.e.borrow(), self.acct.get());
         let Some(a) = e.cfg.accounts.get(i) else { return };
-        let path = glib::markup_escape_text(&a.mount.to_string_lossy()).to_string();
         let state = e.mount_state(i);
+        let pinned = a.modes.values().filter(|m| **m == Mode::Pinned).count();
+        let syncing = e.offline_syncing(i);
+        let problem = e.offline_error(&a.remote).cloned();
+        let snap = MountSnapshot {
+            acct: i,
+            mount_path: a.mount.to_string_lossy().into_owned(),
+            state: state.clone(),
+            paused: e.paused,
+            on_demand: a.on_demand(),
+            pinned,
+            syncing,
+            problem: problem.clone(),
+        };
+        if ov.last_mount.borrow().as_ref() == Some(&snap) {
+            return;
+        }
+        let path = glib::markup_escape_text(&snap.mount_path).to_string();
         ov.retry_btn.set_visible(matches!(state, MountState::Failed(_)));
         match &state {
             MountState::Mounting => {
@@ -195,21 +226,21 @@ impl Ui {
                 }
             }
         }
-        let pinned = a.modes.values().filter(|m| **m == Mode::Pinned).count();
         ov.offline_row.set_visible(pinned > 0);
         let n = format!("{pinned} item{} kept offline", if pinned == 1 { "" } else { "s" });
-        let (mounted, syncing, problem) = (state == MountState::Mounted, e.offline_syncing(i), e.offline_error(&a.remote));
+        let mounted = state == MountState::Mounted;
         ov.offline_sync_btn.set_visible(mounted && !syncing);
-        ov.offline_force_btn.set_visible(mounted && !syncing && problem.is_some_and(|p| p.can_force));
+        ov.offline_force_btn.set_visible(mounted && !syncing && problem.as_ref().is_some_and(|p| p.can_force));
         ov.offline_row.set_subtitle(&glib::markup_escape_text(&if !mounted {
             format!("{n}. While the drive is not mounted, {} shows these offline copies.", a.mount.display())
         } else if syncing {
             format!("{n} · syncing with the cloud…")
-        } else if let Some(p) = problem {
+        } else if let Some(p) = &problem {
             format!("{n} · not up to date.\n{}", p.text)
         } else {
             format!("{n} · up to date, and available when Nuvolo is not running")
         }));
+        *ov.last_mount.borrow_mut() = Some(snap);
     }
 
     pub(super) fn tick_overview(&self, fresh: bool) {

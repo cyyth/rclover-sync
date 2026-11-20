@@ -28,6 +28,9 @@ pub(super) fn group(title: &str, desc: Option<&str>) -> adw::PreferencesGroup {
 }
 
 pub(super) fn set_pill(l: &gtk::Label, text: &str, kind: &str) {
+    if l.label().as_str() == text && l.has_css_class(kind) {
+        return;
+    }
     l.set_label(text);
     for k in ["success", "warning", "error"] {
         l.remove_css_class(k);

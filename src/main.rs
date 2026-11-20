@@ -76,11 +76,23 @@ fn startup(app: &adw::Application) {
     add_actions(app, &e);
     let tray = start_tray(app, &e);
 
-    // Mount right away when the network comes back, instead of waiting for the next retry.
+    // Mount right away when the network comes back; unmount after a 15 s grace period when
+    // the network drops so pinned offline copies underneath the mount become readable.
     let e2 = e.clone();
+    let offline_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     gio::NetworkMonitor::default().connect_network_changed(move |_, available| {
+        if let Some(id) = offline_timer.borrow_mut().take() {
+            id.remove();
+        }
         if available {
             e2.borrow_mut().retry_mounts();
+        } else {
+            let (e3, timer_ref) = (e2.clone(), offline_timer.clone());
+            let id = glib::timeout_add_seconds_local_once(15, move || {
+                *timer_ref.borrow_mut() = None;
+                e3.borrow_mut().unmount_for_offline();
+            });
+            *offline_timer.borrow_mut() = Some(id);
         }
     });
 
@@ -142,7 +154,8 @@ fn start_tray(app: &adw::Application, e: &Shared) -> Option<tray::Handle> {
     tray
 }
 
-/// Every second: poll rclone off the main thread, then update everything with the result.
+/// Adaptive tick: polls rclone at 1 Hz only while the window is visible and work is active;
+/// drops to every 4 s when idle (visible) and every 10 s when hidden. Health checks stay at 5 s.
 /// A poll that is still running (rclone busy) makes the next ones wait instead of piling up.
 fn start_ticking(e: &Shared, conn: Option<gio::DBusConnection>, tray: Option<tray::Handle>) {
     let e = e.clone();
@@ -153,7 +166,19 @@ fn start_ticking(e: &Shared, conn: Option<gio::DBusConnection>, tray: Option<tra
         if busy.replace(true) {
             return glib::ControlFlow::Continue;
         }
-        let job = e.borrow_mut().poll_job();
+        let visible = ui::is_visible();
+        let (active, ticks) = {
+            let eng = e.borrow();
+            (eng.is_active(), eng.ticks())
+        };
+        let want_stats = if visible && active {
+            true
+        } else if visible {
+            ticks % 4 == 0
+        } else {
+            ticks % 10 == 0
+        };
+        let job = e.borrow_mut().poll_job(want_stats);
         let (e, busy, conn, tray, last_status, errors) = (e.clone(), busy.clone(), conn.clone(), tray.clone(), last_status.clone(), errors.clone());
         glib::spawn_future_local(async move {
             let Ok(poll) = gio::spawn_blocking(job).await else {

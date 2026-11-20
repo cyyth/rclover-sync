@@ -12,6 +12,12 @@ impl Engine {
     pub fn set_mode(&mut self, i: usize, rel: &str, mode: Mode) -> Result<(), String> {
         let rel = rel.trim_matches('/').to_owned();
         let a = self.cfg.accounts.get_mut(i).ok_or("add a cloud account first")?;
+        if mode == Mode::Pinned {
+            if let Some(anc) = a.excluded_ancestor(&rel) {
+                let what = if anc.is_empty() { "the drive" } else { &anc };
+                return Err(format!("cannot keep “{rel}” offline while “{what}” is excluded; change “{what}” first"));
+            }
+        }
         let touches_filter = mode == Mode::Excluded || a.modes.get(&rel) == Some(&Mode::Excluded);
         let was_pinned = a.mode_of(&rel) == Mode::Pinned;
         if mode == Mode::OnDemand && rel.is_empty() {
@@ -55,12 +61,14 @@ impl Engine {
         self.sync_offline(i);
     }
 
-    /// Re-lists the folder from the cloud now and, if pinned, syncs its offline copy.
+    /// Re-lists the folder from the cloud now and, if pinned, syncs its offline copy afterwards
+    /// so bisync does not read a stale listing.
     pub fn sync_now(&mut self, abs: &Path) {
+        let Some(client) = self.client.clone() else { return };
         let Some((i, rel)) = self.locate(abs) else { return };
         let a = &self.cfg.accounts[i];
         let pinned = a.mode_of(&rel) == Mode::Pinned;
-        let (client, fs_, abs) = (self.client.clone(), a.fs(), abs.to_path_buf());
+        let (fs_, abs, gen, tx) = (a.fs(), abs.to_path_buf(), self.rclone_gen, self.done_tx.clone());
         std::thread::spawn(move || {
             let dir = if abs.is_dir() {
                 rel.clone()
@@ -74,9 +82,9 @@ impl Engine {
             if let Err(e) = client.call("vfs/refresh", params) {
                 eprintln!("nuvolo: vfs/refresh: {e}");
             }
+            if pinned {
+                let _ = tx.send(super::Done::Refreshed(gen, i));
+            }
         });
-        if pinned {
-            self.sync_offline(i);
-        }
     }
 }
