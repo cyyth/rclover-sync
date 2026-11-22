@@ -81,7 +81,9 @@ pub fn is_inside(path: &Path, mount: &Path) -> bool {
 /// Keeps `XDG_<key>_DIR` pointing at `home` in user-dirs.dirs, and turns off
 /// xdg-user-dirs-update (user-dirs.conf `enabled=False`): at login it runs before the drive is
 /// mounted, sees the linked folder dangling and resets it to ~, which drops its icon in Files.
+/// Also clears what Flatpak apps kept of the folder's old form (see [`clear_sandbox_leftovers`]).
 pub fn keep_user_dir(key: &str, home: &Path) -> io::Result<()> {
+    clear_sandbox_leftovers(&flatpak_apps(), &home.file_name().unwrap_or_default().to_string_lossy());
     let cfg = glib::user_config_dir();
     fs::create_dir_all(&cfg)?;
     let conf = cfg.join("user-dirs.conf");
@@ -100,6 +102,37 @@ pub fn keep_user_dir(key: &str, home: &Path) -> io::Result<()> {
         glib::reload_user_special_dirs_cache();
     }
     Ok(())
+}
+
+/// Where Flatpak apps keep their own home: ~/.var/app/<app id>.
+pub fn flatpak_apps() -> PathBuf {
+    glib::home_dir().join(".var").join("app")
+}
+
+/// A Flatpak app that may see `~/Music` keeps, in its own home, a link to where `~/Music`
+/// leads, or an empty folder (where `~/Music` itself was mounted, while it was a real folder).
+/// Once `~/Music` becomes a link, or a link to another place, or a real folder again, the
+/// app no longer starts ("bwrap: Can't make symlink at ~/Music: destination exists and is not
+/// a symlink"). Flatpak makes both anew at each start, so they are removed: links, and empty
+/// folders only. Returns what was removed.
+pub fn clear_sandbox_leftovers(apps: &Path, name: &str) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    if name.is_empty() {
+        return removed;
+    }
+    for app in fs::read_dir(apps).into_iter().flatten().flatten() {
+        let p = app.path().join(name);
+        let gone = match fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => fs::remove_file(&p).is_ok(),
+            Ok(m) if m.is_dir() => fs::remove_dir(&p).is_ok(), // fails, as it should, unless empty
+            _ => false,
+        };
+        if gone {
+            eprintln!("rclover: removed {}, left by Flatpak; the app makes it anew", p.display());
+            removed.push(p);
+        }
+    }
+    removed
 }
 
 /// Runs [`keep_user_dir`] for every home folder linked into one of `mounts`, repairing entries
@@ -446,6 +479,23 @@ mod tests {
         let Status::Unfinished(job) = status(&home, &mount, &jobs) else { panic!() };
         finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
         assert_eq!(fs::read_to_string(home.join("a.jpg")).unwrap(), "x", "moved back from the custom folder");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clears_only_links_and_empty_folders_left_by_flatpak() {
+        let root = tmp("flatpak");
+        let (steam, other, notes) = (root.join("com.valvesoftware.Steam"), root.join("org.example.App"), root.join("org.example.Notes"));
+        fs::create_dir_all(steam.join("Music")).unwrap(); // empty mount point
+        fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink("../../home/me/Onedrive/Music", other.join("Music")).unwrap(); // stale link
+        fs::create_dir_all(notes.join("Music")).unwrap();
+        fs::write(notes.join("Music/song.ogg"), "keep").unwrap(); // the app's own files
+        let removed = clear_sandbox_leftovers(&root, "Music");
+        assert_eq!(removed.len(), 2);
+        assert!(!steam.join("Music").exists() && other.join("Music").symlink_metadata().is_err());
+        assert_eq!(fs::read_to_string(notes.join("Music/song.ogg")).unwrap(), "keep", "never a folder with files");
+        assert!(clear_sandbox_leftovers(&root.join("missing"), "Music").is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

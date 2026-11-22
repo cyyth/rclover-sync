@@ -120,6 +120,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
             let backup = job.backup.map(|b| b.display().to_string()).unwrap_or_default();
             crate::notify::notify(&id, &format!("{name} is in the cloud"), &format!("Everything is uploaded. Your original folder is kept in {backup}; delete it once you have checked the cloud copy."));
         } else {
+            super::clear_sandbox_leftovers(&super::flatpak_apps(), &name);
             crate::notify::notify(&id, &format!("{name} is back on this device"), "The cloud copy is kept.");
         }
     });
