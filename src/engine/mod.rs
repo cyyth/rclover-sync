@@ -1,4 +1,4 @@
-//! The engine: owns the rclone daemon and Nuvolo's sync policy.
+//! The engine: owns the rclone daemon and rclover's sync policy.
 //!
 //! It lives on the main thread ([`Shared`]) and never waits on the network there: slow work
 //! (mounting, two-way sync, polling rclone) runs on threads, and the results come back as
@@ -155,7 +155,7 @@ impl Engine {
     /// window opens immediately without waiting up to 10 s for rclone.
     pub fn start() -> Result<Shared, String> {
         let cfg = config::load()?;
-        let cache_dir = glib::user_cache_dir().join("nuvolo");
+        let cache_dir = glib::user_cache_dir().join("rclover");
         let (done_tx, done_rx) = channel();
         let mut e = Engine {
             client: None,
@@ -249,7 +249,7 @@ impl Engine {
                 }
             }
             Err(e) => {
-                eprintln!("nuvolo: {e}");
+                eprintln!("rclover: {e}");
                 self.rclone_error = Some(e);
             }
         }
@@ -293,10 +293,10 @@ impl Engine {
         self.rclone_restarts += 1;
         let delay = restart_delay(self.rclone_restarts);
         self.next_restart = 0;
-        eprintln!("nuvolo: rclone is not running, starting it again (attempt {}; next in {delay} s)", self.rclone_restarts);
+        eprintln!("rclover: rclone is not running, starting it again (attempt {}; next in {delay} s)", self.rclone_restarts);
         if self.rclone_restarts == 3 {
             let log = self.cache_dir.join("rclone.log");
-            crate::notify::notify("rclone-restarts", "rclone keeps stopping", &format!("Nuvolo keeps restarting it, waiting longer each time. Details are in {}.", log.display()));
+            crate::notify::notify("rclone-restarts", "rclone keeps stopping", &format!("rclover keeps restarting it, waiting longer each time. Details are in {}.", log.display()));
         }
         self.spawn_rclone();
         // Applies once this attempt has died too (next_restart is set from the current tick).
@@ -315,7 +315,7 @@ impl Engine {
                 Done::Refreshed(gen, i) if gen == self.rclone_gen => self.sync_offline(i),
                 Done::Paused(gen, on, res) if gen == self.rclone_gen => match res {
                     Ok(()) => self.paused = on,
-                    Err(e) => eprintln!("nuvolo: pause: {e}"),
+                    Err(e) => eprintln!("rclover: pause: {e}"),
                 },
                 _ => {} // stale result from an earlier rclone generation
             }
@@ -335,7 +335,7 @@ impl Engine {
 
     pub fn save(&self) {
         if let Err(e) = config::save(&self.cfg) {
-            eprintln!("nuvolo: could not save {}: {e}", config::path().display());
+            eprintln!("rclover: could not save {}: {e}", config::path().display());
         }
     }
 
@@ -350,7 +350,7 @@ impl Engine {
         });
         std::thread::spawn(move || {
             if let Err(e) = client.call_local("options/set", opts) {
-                eprintln!("nuvolo: options/set: {e}");
+                eprintln!("rclover: options/set: {e}");
             }
         });
     }

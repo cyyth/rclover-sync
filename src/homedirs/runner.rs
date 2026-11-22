@@ -54,7 +54,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
             e.borrow_mut().jobs.remove(&home);
             crate::ui::refresh_home();
             let what = if job.op == Op::Link { "to the cloud" } else { "back to this device" };
-            return crate::notify::notify(&id, &format!("Could not move {name} {what}"), &format!("{} Nothing was lost. Resume or undo it in Nuvolo → Preferences → Home Folders.", crate::errors::explain(&err)));
+            return crate::notify::notify(&id, &format!("Could not move {name} {what}"), &format!("{} Nothing was lost. Resume or undo it in rclover → Preferences → Home Folders.", crate::errors::explain(&err)));
         }
         if job.op == Op::Link {
             // The files are in the cache; wait until rclone has uploaded the moved folder.
@@ -100,7 +100,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
                             return crate::notify::notify(
                                 &id,
                                 &format!("Upload of {name} was interrupted"),
-                                "Nothing was lost. Nuvolo can resume once the drive is mounted again (Preferences → Home Folders).",
+                                "Nothing was lost. rclover can resume once the drive is mounted again (Preferences → Home Folders).",
                             );
                         }
                         if let Some(p) = e.borrow_mut().jobs.get_mut(&home) {
@@ -154,7 +154,7 @@ pub fn resume_all(e: &Shared) {
             .collect()
     };
     for (home, mount, job) in todo {
-        eprintln!("nuvolo: resuming the move of {}", home.display());
+        eprintln!("rclover: resuming the move of {}", home.display());
         run(e, home, mount, job);
     }
 }

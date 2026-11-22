@@ -1,4 +1,4 @@
-//! Everything that talks to rclone. Nuvolo never runs rclone commands directly: it starts one
+//! Everything that talks to rclone. rclover never runs rclone commands directly: it starts one
 //! private `rclone rcd` ([`daemon`]) and drives it over its JSON remote-control API ([`client`]).
 //!
 //! - [`client`]: the HTTP client for the remote-control API.

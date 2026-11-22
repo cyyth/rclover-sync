@@ -58,7 +58,7 @@ pub fn block_gnome_trash(mount: &Path) -> std::io::Result<()> {
                 .find(|p| p.symlink_metadata().is_err())
                 .expect("a free name exists");
             std::fs::rename(&trash, &kept)?;
-            eprintln!("nuvolo: moved GNOME Files' trash in the drive to {}", kept.display());
+            eprintln!("rclover: moved GNOME Files' trash in the drive to {}", kept.display());
         }
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         Err(_) => {}
@@ -178,13 +178,13 @@ impl Engine {
                 let mount = self.cfg.accounts[i].mount.clone();
                 std::thread::spawn(move || {
                     if let Err(e) = block_gnome_trash(&mount) {
-                        eprintln!("nuvolo: {}: could not turn off GNOME Files' trash: {e}", mount.display());
+                        eprintln!("rclover: {}: could not turn off GNOME Files' trash: {e}", mount.display());
                     }
                 });
                 self.sync_offline(i);
             }
             Err(e) => {
-                eprintln!("nuvolo: mounting {remote}: failed: {e}");
+                eprintln!("rclover: mounting {remote}: failed: {e}");
                 // One notification per new problem, not one per retry.
                 if self.mount_errors.get(&remote) != Some(&e) {
                     notify::notify(&id, &format!("“{remote}” is not available"), &explain(&e));
@@ -230,7 +230,7 @@ impl Engine {
             .filter(|&i| self.mount_state(i) == MountState::Mounted && !self.unmounting.contains(&i))
             .collect();
         for i in mounted {
-            eprintln!("nuvolo: network unavailable; unmounting {} to expose offline copies", self.cfg.accounts[i].mount.display());
+            eprintln!("rclover: network unavailable; unmounting {} to expose offline copies", self.cfg.accounts[i].mount.display());
             self.start_unmount(i, UnmountKind::Offline);
         }
     }
@@ -278,7 +278,7 @@ impl Engine {
                 self.mount_errors.insert(remote, NO_INTERNET.to_owned());
             }
             (UnmountKind::Offline, Err(e)) => {
-                eprintln!("nuvolo: could not unmount {remote} for offline mode (busy?): {e}");
+                eprintln!("rclover: could not unmount {remote} for offline mode (busy?): {e}");
                 // Tell the user once what keeps it busy; the health tick tries again.
                 if self.offline_busy.insert(i) {
                     let mount = self.cfg.accounts[i].mount.clone();
@@ -288,7 +288,7 @@ impl Engine {
                         &format!("offline-busy-{remote}"),
                         &format!("Offline copies of “{remote}” cannot be shown"),
                         &format!(
-                            "{names} has {} open, so Nuvolo cannot switch it to the offline copies. Close it (or leave that folder in a terminal); Nuvolo tries again by itself.",
+                            "{names} has {} open, so rclover cannot switch it to the offline copies. Close it (or leave that folder in a terminal); rclover tries again by itself.",
                             mount.display()
                         ),
                     );
@@ -303,7 +303,7 @@ impl Engine {
                 }
             }
             (UnmountKind::Unhealthy, Err(e)) => {
-                eprintln!("nuvolo: could not unmount unhealthy mount {remote}: {e}");
+                eprintln!("rclover: could not unmount unhealthy mount {remote}: {e}");
             }
         }
     }
@@ -335,7 +335,7 @@ impl Engine {
                     let strikes = self.unhealthy_strikes.entry(i).or_insert(0);
                     *strikes += 1;
                     if *strikes >= 2 {
-                        eprintln!("nuvolo: {} failed health checks ({} strikes), unmounting to recover", a.mount.display(), *strikes);
+                        eprintln!("rclover: {} failed health checks ({} strikes), unmounting to recover", a.mount.display(), *strikes);
                         self.start_unmount(i, UnmountKind::Unhealthy);
                     }
                 }
@@ -345,7 +345,7 @@ impl Engine {
                         continue;
                     }
                     if !self.mount_errors.contains_key(&a.remote) {
-                        eprintln!("nuvolo: {} is not mounted, mounting again", a.mount.display());
+                        eprintln!("rclover: {} is not mounted, mounting again", a.mount.display());
                     }
                     self.mount_inner(i, true);
                 }
@@ -365,7 +365,7 @@ impl Engine {
     }
 }
 
-/// Names of the programs (other than Nuvolo) with a file, folder or working directory inside
+/// Names of the programs (other than rclover) with a file, folder or working directory inside
 /// `mount`, which keep it from being unmounted. Reads only `/proc` links: never touches the
 /// mount itself, so it is quick even when the mount does not answer.
 pub fn holders(mount: &Path) -> Vec<String> {
@@ -393,7 +393,7 @@ pub fn holders(mount: &Path) -> Vec<String> {
 fn prepare_mount_point_bg(mount: &Path, need_offline_handle: bool, offline_link: &Path) -> Result<Option<File>, String> {
     let mounted = rclone::mounted_paths();
     if rclone::is_mounted_path(&mounted, mount) && rclone::probe_mount(mount, Duration::from_secs(5)) == MountHealth::Dead {
-        eprintln!("nuvolo: clearing dead mount at {}", mount.display());
+        eprintln!("rclover: clearing dead mount at {}", mount.display());
         rclone::lazy_unmount(mount);
     }
     fs::create_dir_all(mount).map_err(|e| format!("{}: {e}", mount.display()))?;
@@ -412,7 +412,7 @@ fn prepare_mount_point_bg(mount: &Path, need_offline_handle: bool, offline_link:
     match held {
         Ok(f) => Ok(Some(f)),
         Err(e) => {
-            eprintln!("nuvolo: no offline copies for {}: {e}", mount.display());
+            eprintln!("rclover: no offline copies for {}: {e}", mount.display());
             Ok(None)
         }
     }
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn finds_programs_working_in_a_folder() {
-        let d = std::env::temp_dir().join(format!("nuvolo-holders-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-holders-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let mut child = std::process::Command::new("sleep").arg("5").current_dir(&d).spawn().unwrap();
         std::thread::sleep(Duration::from_millis(100));
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn gnome_trash_is_blocked_and_an_old_one_kept() {
-        let d = std::env::temp_dir().join(format!("nuvolo-trash-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-trash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let trash = d.join(format!(".Trash-{}", unsafe { libc::getuid() }));
         std::fs::create_dir_all(trash.join("files")).unwrap();

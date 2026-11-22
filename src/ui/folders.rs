@@ -14,7 +14,7 @@ impl Ui {
         let page = adw::PreferencesPage::new();
         let g = group(
             "Cloud Folders",
-            Some("Choose what stays on this device. On-Demand folders use no disk space until a file is opened. Offline folders also keep a copy that is there when Nuvolo is not running."),
+            Some("Choose what stays on this device. On-Demand folders use no disk space until a file is opened. Offline folders also keep a copy that is there when rclover is not running."),
         );
         let reload = gtk::Button::from_icon_name("view-refresh-symbolic");
         reload.add_css_class("flat");

@@ -84,7 +84,7 @@ pub fn merge_entry_with(entry: &fs::DirEntry, to: &Path, copied: &AtomicUsize, p
                 }
             }
             // Copy under a temporary name, so an interrupted copy never looks finished.
-            let part = dst.with_file_name(format!(".{}.nuvolo-part", dst.file_name().unwrap_or_default().to_string_lossy()));
+            let part = dst.with_file_name(format!(".{}.rclover-part", dst.file_name().unwrap_or_default().to_string_lossy()));
             fs::copy(&src, &part).and_then(|_| fs::rename(&part, &dst)).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", src.display())))?;
             copied.fetch_add(1, Ordering::Relaxed);
         }
@@ -112,7 +112,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nuvolo-copy-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-copy-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -135,7 +135,7 @@ mod tests {
         merge_into(&from, &to, &n).unwrap();
         assert!(!to.join("a (this device 2).txt").exists());
         assert!(!to.join("sub/b (this device).txt").exists());
-        assert_eq!(fs::read_dir(&to).unwrap().count(), 3, "a.txt, a (this device).txt, sub; no .nuvolo-part left");
+        assert_eq!(fs::read_dir(&to).unwrap().count(), 3, "a.txt, a (this device).txt, sub; no .rclover-part left");
         let _ = (fs::remove_dir_all(from), fs::remove_dir_all(to));
     }
 

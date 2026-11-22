@@ -2,16 +2,16 @@
 //! mount folder itself, underneath the mount.
 //!
 //! While the drive is mounted, the mount covers them and `~/Cloud/<remote>` shows the live
-//! drive. When Nuvolo is not running, or the drive could not be mounted (no internet), the
+//! drive. When rclover is not running, or the drive could not be mounted (no internet), the
 //! same paths show the offline copies. So links into pinned folders (home folders, dotfiles
 //! in ~/.config) keep working at all times.
 //!
-//! How the covered folder stays reachable: before mounting, Nuvolo opens the mount folder and
+//! How the covered folder stays reachable: before mounting, rclover opens the mount folder and
 //! keeps it open. Paths through that handle (`/proc/<pid>/fd/<n>/...`) lead under the mount,
-//! not into it. A stable symlink, `~/.cache/nuvolo/offline/<remote>`, points there, so
+//! not into it. A stable symlink, `~/.cache/rclover/offline/<remote>`, points there, so
 //! rclone's two-way sync state survives restarts.
 //!
-//! While the drive is mounted, nothing but Nuvolo writes to the offline copies: every link
+//! While the drive is mounted, nothing but rclover writes to the offline copies: every link
 //! leads into the mount. So after each mount, each copy is synced both ways once
 //! ([`rclone::bisync`]), which uploads what changed while the drive was not mounted. After
 //! that, until the drive is unmounted, the copies only follow the cloud ([`rclone::mirror`]),
@@ -175,7 +175,7 @@ impl OfflineJob {
     fn run(&self) -> (Result<(), OfflineProblem>, u64, Vec<String>) {
         let mount = &self.account.mount;
         let fail = |what: &str, raw: String| {
-            eprintln!("nuvolo: offline copy of {what}: {raw}");
+            eprintln!("rclover: offline copy of {what}: {raw}");
             OfflineProblem {
                 text: format!("“{what}”: {}", explain(&raw)),
                 can_force: raw.contains("too many deletes") || raw.contains("all files were changed"),
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn conflict_copies_get_readable_names() {
-        let d = std::env::temp_dir().join(format!("nuvolo-conflicts-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-conflicts-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("sub")).unwrap();
         for f in ["notes.txt.conflict1", "sub/Makefile.conflict2", "photo.conflict.jpg", "plain.txt"] {
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn strays_refuse_to_move_onto_the_same_disk() {
         // Without a mount, "under" and "mount" are the same folder: nothing may be moved.
-        let d = std::env::temp_dir().join(format!("nuvolo-strays-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-strays-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("loose")).unwrap();
         fs::write(d.join("loose/a.txt"), "keep me").unwrap();
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn stray_rescue_keeps_same_size_different_file() {
-        let root = std::env::temp_dir().join(format!("nuvolo-stray-same-size-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rclover-stray-same-size-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (under, mount) = (root.join("under"), root.join("mount"));
         fs::create_dir_all(&under).unwrap();
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn stray_rescue_skips_excluded_roots() {
-        let root = std::env::temp_dir().join(format!("nuvolo-stray-excl-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rclover-stray-excl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (under, mount) = (root.join("under"), root.join("mount"));
         fs::create_dir_all(under.join("Work/build")).unwrap();

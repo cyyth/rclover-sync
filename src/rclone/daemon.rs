@@ -40,7 +40,7 @@ impl Rcd {
             Err(_) if port == preferred_port => {
                 // Race on the preferred port: retry once on an OS-assigned free port.
                 let fallback = pick_free_port()?;
-                eprintln!("nuvolo: port {preferred_port} was busy, retrying rclone on port {fallback}");
+                eprintln!("rclover: port {preferred_port} was busy, retrying rclone on port {fallback}");
                 Self::spawn_on(fallback, cache_dir)
             }
             Err(e) => Err(e),
@@ -52,7 +52,7 @@ impl Rcd {
         let log_file = cache_dir.join("rclone.log");
         let mut cmd = Command::new("rclone");
         cmd.arg("rcd")
-            .arg("--rc-user=nuvolo")
+            .arg("--rc-user=rclover")
             .arg(format!("--rc-addr=127.0.0.1:{port}"))
             .arg(format!("--cache-dir={}", cache_dir.display()))
             .arg(format!("--log-file={}", log_file.display()))
@@ -60,7 +60,7 @@ impl Rcd {
             .env("RCLONE_RC_PASS", &pass)
             .stdin(Stdio::null())
             .stdout(Stdio::null());
-        // If Nuvolo dies, take rclone with it, so a crash never leaves the port taken.
+        // If rclover dies, take rclone with it, so a crash never leaves the port taken.
         // SAFETY: prctl is async-signal-safe and touches no Rust state.
         unsafe {
             cmd.pre_exec(|| {
@@ -71,7 +71,7 @@ impl Rcd {
             });
         }
         let child = cmd.spawn()?;
-        let auth = base64::engine::general_purpose::STANDARD.encode(format!("nuvolo:{pass}"));
+        let auth = base64::engine::general_purpose::STANDARD.encode(format!("rclover:{pass}"));
         let client = Client::new(format!("http://127.0.0.1:{port}"), format!("Basic {auth}"));
         let mut rcd = Rcd { child, client, caps: RcloneCaps::default() };
         let start = Instant::now();
@@ -89,7 +89,7 @@ impl Rcd {
                 if let Some(ver) = parse_version(ver_str) {
                     if ver < MIN_RCLONE {
                         return Err(io::Error::other(format!(
-                            "rclone {ver_str} is too old; Nuvolo requires rclone {}.{}.{} or newer",
+                            "rclone {ver_str} is too old; rclover requires rclone {}.{}.{} or newer",
                             MIN_RCLONE.0, MIN_RCLONE.1, MIN_RCLONE.2
                         )));
                     }
@@ -154,7 +154,7 @@ fn pick_port(preferred: u16) -> io::Result<u16> {
     }
     let free = pick_free_port()?;
     if preferred != 0 {
-        eprintln!("nuvolo: port {preferred} is in use, using port {free} for rclone");
+        eprintln!("rclover: port {preferred} is in use, using port {free} for rclone");
     }
     Ok(free)
 }
@@ -197,7 +197,7 @@ mod tests {
         if Command::new("rclone").arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("nuvolo-rcd-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rclover-rcd-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (tx, rx) = mpsc::channel();
         Rcd::spawn_async(None, 0, dir.clone(), move |res| {

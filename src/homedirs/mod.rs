@@ -5,7 +5,7 @@
 //! is renamed to a backup first, then its contents are copied into the cloud folder, keeping
 //! both copies when a name already exists there.
 //!
-//! A move in progress is recorded in a job file (`~/.local/share/nuvolo/jobs/Documents.json`)
+//! A move in progress is recorded in a job file (`~/.local/share/rclover/jobs/Documents.json`)
 //! before anything changes, and removed only once it has finished. So after a failure, a quit or
 //! a crash, [`status`] knows the folder is half-moved and the move can be resumed or undone.
 //! Copying is safe to repeat: a file already copied is skipped, not duplicated.
@@ -57,9 +57,9 @@ pub fn is_linked(home: &Path, mount: &Path) -> bool {
     fs::read_link(home).is_ok_and(|t| points_into(&t, mount))
 }
 
-/// Where originals are kept: ~/.local/share/nuvolo/backups (same filesystem as ~).
+/// Where originals are kept: ~/.local/share/rclover/backups (same filesystem as ~).
 pub fn backup_root() -> PathBuf {
-    glib::user_data_dir().join("nuvolo").join("backups")
+    glib::user_data_dir().join("rclover").join("backups")
 }
 
 fn backup_path(root: &Path, home: &Path) -> PathBuf {
@@ -68,9 +68,9 @@ fn backup_path(root: &Path, home: &Path) -> PathBuf {
     root.join(format!("{name}-{stamp}"))
 }
 
-/// Where job files are kept: ~/.local/share/nuvolo/jobs.
+/// Where job files are kept: ~/.local/share/rclover/jobs.
 pub fn jobs_root() -> PathBuf {
-    glib::user_data_dir().join("nuvolo").join("jobs")
+    glib::user_data_dir().join("rclover").join("jobs")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,8 +187,16 @@ pub fn start_unlink(home: &Path, mount: &Path, jobs: &Path) -> io::Result<()> {
     write_job(jobs, home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.to_path_buf()), error: None })
 }
 
+/// Where a move back is assembled. One left by a move that Nuvolo (rclover's old name) started
+/// is taken over under the new name.
 fn staging(home: &Path) -> PathBuf {
-    home.with_file_name(format!(".{}.nuvolo-restore", home.file_name().unwrap_or_default().to_string_lossy()))
+    let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let new = home.with_file_name(format!(".{name}.rclover-restore"));
+    let old = home.with_file_name(format!(".{name}.nuvolo-restore"));
+    if !new.exists() && old.is_dir() {
+        let _ = fs::rename(&old, &new);
+    }
+    new
 }
 
 /// Does (or resumes) the copying of an unfinished move. The caller clears the job: a move back
@@ -274,7 +282,7 @@ pub fn adopt_old_moves(jobs: &Path, backups: &Path) {
             .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&prefix)))
             .max();
         if let Some(backup) = newest {
-            eprintln!("nuvolo: checking that {} was fully copied from {}", home.display(), backup.display());
+            eprintln!("rclover: checking that {} was fully copied from {}", home.display(), backup.display());
             let _ = write_job(jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: None, error: None });
         }
     }
@@ -285,7 +293,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nuvolo-homedirs-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-homedirs-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -360,6 +368,22 @@ mod tests {
         undo(&home, &mount, &jobs).unwrap();
         assert_eq!(status(&home, &mount, &jobs), Status::Local);
         assert_eq!(fs::read_to_string(home.join("doc.txt")).unwrap(), "important");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn takes_over_a_move_back_started_under_the_old_name() {
+        let root = tmp("legacy-staging");
+        let (home, mount, jobs) = (root.join("Videos"), root.join("mount"), root.join("jobs"));
+        fs::create_dir_all(cloud_path(&mount, &home)).unwrap();
+        let old = root.join(".Videos.nuvolo-restore");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("clip.mp4"), "v").unwrap();
+        write_job(&jobs, &home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), error: None }).unwrap();
+        let Status::Unfinished(job) = status(&home, &mount, &jobs) else { panic!("seen as unfinished") };
+        finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
+        assert_eq!(fs::read_to_string(home.join("clip.mp4")).unwrap(), "v");
+        assert!(!old.exists());
         let _ = fs::remove_dir_all(root);
     }
 

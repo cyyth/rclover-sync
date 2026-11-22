@@ -108,7 +108,7 @@ impl Engine {
             } else {
                 self.poll_failures += 1;
                 if self.poll_failures >= WATCHDOG_FAILURES {
-                    eprintln!("nuvolo: rclone unresponsive after {} polls, restarting", self.poll_failures);
+                    eprintln!("rclover: rclone unresponsive after {} polls, restarting", self.poll_failures);
                     self.spawn_rclone();
                 }
             }

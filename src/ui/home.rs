@@ -33,8 +33,8 @@ impl Ui {
             let status = homedirs::status(&home, &mount, &jobs);
             let (mode, mixed) = self.e.borrow().cfg.accounts.get(self.acct.get()).map_or((Mode::OnDemand, false), |a| (a.mode_of(&name), a.is_mixed(&name)));
             let kept = match mode {
-                Mode::OnDemand => "On-Demand: files download when opened, so the link needs Nuvolo running",
-                Mode::Pinned => "Offline: kept on this device, also when Nuvolo is not running",
+                Mode::OnDemand => "On-Demand: files download when opened, so the link needs rclover running",
+                Mode::Pinned => "Offline: kept on this device, also when rclover is not running",
                 Mode::Excluded => "",
             };
             let kept = if mixed { format!("{kept}. Some folders inside are set differently.") } else { format!("{kept}.") };
@@ -122,7 +122,7 @@ impl Ui {
     pub(super) fn start_home(self: &Rc<Self>, home: PathBuf, mount: PathBuf, job: homedirs::Job) {
         if self.e.borrow().mounted_account(&mount).is_none() {
             self.rebuild_home();
-            return self.toast("The drive is not mounted yet. Nuvolo resumes by itself once it is; see Overview for why it is not mounted.");
+            return self.toast("The drive is not mounted yet. rclover resumes by itself once it is; see Overview for why it is not mounted.");
         }
         if let Err(e) = homedirs::write_job(&homedirs::jobs_root(), &home, &job) {
             self.rebuild_home();
@@ -153,7 +153,7 @@ impl Ui {
         let d = adw::AlertDialog::new(
             Some(&format!("Move {name} to the Cloud?")),
             Some(&format!(
-                "{} will become a link to {}. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.\n\nWhat stays on this device follows the Folders & Cache page. Only folders set to Offline are there when Nuvolo is not running.",
+                "{} will become a link to {}. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.\n\nWhat stays on this device follows the Folders & Cache page. Only folders set to Offline are there when rclover is not running.",
                 home.display(), cloud.display(), homedirs::backup_root().display()
             )),
         );
@@ -184,7 +184,7 @@ impl Ui {
         let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let d = adw::AlertDialog::new(
             Some(&format!("Move {name} Back to This Device?")),
-            Some(&format!("Nuvolo downloads a copy of the cloud folder into {}. The cloud copy is kept.", home.display())),
+            Some(&format!("rclover downloads a copy of the cloud folder into {}. The cloud copy is kept.", home.display())),
         );
         d.add_response("cancel", "Cancel");
         d.add_response("back", "Move Back");

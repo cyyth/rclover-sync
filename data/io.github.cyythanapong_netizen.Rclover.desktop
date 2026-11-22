@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Nuvolo
+Name=rclover
 Comment=Mount cloud drives on demand and keep chosen folders offline
-Exec=nuvolo
-Icon=io.github.cyythanapong_netizen.Nuvolo
+Exec=rclover
+Icon=io.github.cyythanapong_netizen.Rclover
 Terminal=false
 Type=Application
 Categories=GTK;GNOME;Utility;FileTools;

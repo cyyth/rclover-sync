@@ -238,7 +238,7 @@ impl Ui {
         } else if let Some(p) = &problem {
             format!("{n} · not up to date.\n{}", p.text)
         } else {
-            format!("{n} · up to date, and available when Nuvolo is not running")
+            format!("{n} · up to date, and available when rclover is not running")
         }));
         *ov.last_mount.borrow_mut() = Some(snap);
     }
@@ -311,7 +311,7 @@ impl Storage {
             card.append(&note);
             (value, bar, note)
         };
-        let (pinned_value, pinned_bar, _) = part("Offline folders", "storage-pinned", "Always on this device, also when Nuvolo is not running. As large as what you set to Offline.");
+        let (pinned_value, pinned_bar, _) = part("Offline folders", "storage-pinned", "Always on this device, also when rclover is not running. As large as what you set to Offline.");
         let (cache_value, cache_bar, cache_note) = part("On-demand cache", "storage-cache", "");
         Storage { card, total, pinned_value, pinned_bar, cache_value, cache_bar, cache_note }
     }

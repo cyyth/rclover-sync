@@ -38,10 +38,10 @@ pub enum Scope<'a> {
 /// file changed at once. `force` overrides them (the user's "Sync Anyway"). Single files are
 /// always forced: for one file, "every file changed" is any change.
 ///
-/// The first run merges both sides (the newer file wins) and passes on no deletions. Nuvolo
+/// The first run merges both sides (the newer file wins) and passes on no deletions. rclover
 /// knows a pair had its first run from a marker in `workdir`: bisync's error does not say.
 pub fn bisync(c: &Client, local: &Path, remote: &str, workdir: &Path, scope: Scope, policy: ConflictPolicy, force: bool) -> Result<(), String> {
-    let own = workdir.join("nuvolo");
+    let own = workdir.join("rclover");
     fs::create_dir_all(&own).map_err(|e| e.to_string())?;
     let mut key = format!("{}..{remote}", local.display()).replace(['/', ':'], "_");
     let (resolve, loser) = match policy {
@@ -91,7 +91,7 @@ pub fn bisync(c: &Client, local: &Path, remote: &str, workdir: &Path, scope: Sco
     let marker = own.join(key);
     let first = !marker.exists();
     // bisync will not sync from an empty folder (critical error, not even with force). An
-    // offline copy emptied while Nuvolo was not running is put back from the cloud instead.
+    // offline copy emptied while rclover was not running is put back from the cloud instead.
     let emptied = !first && whole_folder && fs::read_dir(local).map_or(true, |mut d| d.next().is_none());
     if first || emptied {
         params["resync"] = json!(true);
@@ -99,7 +99,7 @@ pub fn bisync(c: &Client, local: &Path, remote: &str, workdir: &Path, scope: Sco
     }
     let mut res = c.call_for("sync/bisync", params.clone(), SYNC_TIMEOUT);
     if let Some(lock) = res.as_ref().err().and_then(|e| stale_lock(e)) {
-        // Left by a sync that was cut off: Nuvolo runs one sync per account at a time.
+        // Left by a sync that was cut off: rclover runs one sync per account at a time.
         let _ = fs::remove_file(lock);
         res = c.call_for("sync/bisync", params, SYNC_TIMEOUT);
     }
@@ -218,8 +218,8 @@ pub(crate) mod tests {
 
     #[test]
     fn finds_the_stale_lock_and_escapes_names() {
-        let err = "prior lock file found: /w/x.lck\nTip: ... rclone deletefile \"/home/me/.cache/nuvolo/bisync/a..b.lck\" then run";
-        assert_eq!(stale_lock(err).as_deref(), Some("/home/me/.cache/nuvolo/bisync/a..b.lck"));
+        let err = "prior lock file found: /w/x.lck\nTip: ... rclone deletefile \"/home/me/.cache/rclover/bisync/a..b.lck\" then run";
+        assert_eq!(stale_lock(err).as_deref(), Some("/home/me/.cache/rclover/bisync/a..b.lck"));
         assert_eq!(stale_lock("bisync aborted"), None);
         assert_eq!(glob_escape("notes [draft].md"), "notes \\[draft\\].md");
     }
@@ -239,7 +239,7 @@ pub(crate) mod tests {
         if std::process::Command::new("rclone").arg("version").output().is_err() {
             return;
         }
-        let d = std::env::temp_dir().join(format!("nuvolo-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         let rcd = crate::rclone::Rcd::spawn(0, &d.join("cache")).expect("rclone starts");

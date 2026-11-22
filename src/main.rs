@@ -1,4 +1,4 @@
-//! Nuvolo: cloud drives on demand for GNOME, powered by rclone.
+//! rclover: cloud drives on demand for GNOME, powered by rclone.
 //!
 //! This file only wires the parts together. Where to look:
 //!
@@ -11,12 +11,14 @@
 //! - [`notify`]: desktop notifications, in bulk.
 //! - [`errors`]: what an error means and what to do about it.
 //! - [`config`]: the settings file.
+//! - [`migrate`]: the one-time move from the old name, Nuvolo.
 
 mod config;
 mod dbus;
 mod engine;
 mod errors;
 mod homedirs;
+mod migrate;
 mod notify;
 mod rclone;
 mod tray;
@@ -28,9 +30,9 @@ use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-pub const APP_ID: &str = "io.github.cyythanapong_netizen.Nuvolo";
-pub const REPO_URL: &str = "https://github.com/cyythanapong-netizen/nuvolo-sync";
-pub const DOCS_URL: &str = "https://cyythanapong-netizen.github.io/nuvolo-sync/";
+pub const APP_ID: &str = "io.github.cyythanapong_netizen.Rclover";
+pub const REPO_URL: &str = "https://github.com/cyythanapong-netizen/rclover-sync";
+pub const DOCS_URL: &str = "https://cyythanapong-netizen.github.io/rclover-sync/";
 
 const CSS: &str = "
 .pill-badge { border-radius: 9999px; padding: 2px 10px; font-weight: bold; font-size: 0.85em; }
@@ -55,10 +57,10 @@ fn startup(app: &adw::Application) {
         gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 
-    let e = match engine::Engine::start() {
+    let e = match migrate::from_nuvolo().and_then(|()| engine::Engine::start()) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("nuvolo: {err}");
+            eprintln!("rclover: {err}");
             let err = errors::explain(&err);
             app.connect_activate(move |app| ui::fatal(app, &err));
             return;
@@ -144,7 +146,7 @@ fn start_tray(app: &adw::Application, e: &Shared) -> Option<tray::Handle> {
                 tray::Cmd::TogglePause => {
                     let on = !e.borrow().paused;
                     if let Err(err) = e.borrow_mut().set_paused(on) {
-                        eprintln!("nuvolo: pause: {err}");
+                        eprintln!("rclover: pause: {err}");
                     }
                 }
                 tray::Cmd::Quit => app.quit(),

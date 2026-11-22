@@ -4,12 +4,12 @@ Architecture
 Components
 ----------
 
-Nuvolo is one process: GTK on the main thread, and worker threads for anything that waits
+rclover is one process: GTK on the main thread, and worker threads for anything that waits
 on the network or the disk. ``src/main.rs`` only wires the parts together. Each module
 starts with a comment that lists its files.
 
 ``rclone rcd``
-   Nuvolo starts a private rclone daemon on ``127.0.0.1`` with a random password, passed
+   rclover starts a private rclone daemon on ``127.0.0.1`` with a random password, passed
    through the environment. All work happens through its remote-control API.
 
 =====================  ==============================================================
@@ -37,7 +37,7 @@ starts with a comment that lists its files.
 ``src/tray.rs``        The top-bar icon (``ksni``, own thread, commands over a channel).
 ``src/notify.rs``      Desktop notifications, in bulk and replacing each other.
 ``src/errors.rs``      What an error means and what to do about it.
-``src/config.rs``      ``~/.config/nuvolo/config.toml``.
+``src/config.rs``      ``~/.config/rclover/config.toml``.
 =====================  ==============================================================
 
 Mounts
@@ -46,7 +46,7 @@ Mounts
 Each account is mounted with ``--vfs-cache-mode full`` and a 5-second write-back delay.
 Ignore patterns and excluded folders become ``--exclude`` rules on the mount, which is
 why changing them needs a remount. While uploads are pending or the mount is busy (for
-example, open in GNOME Files), Nuvolo postpones the remount and retries every 5 seconds.
+example, open in GNOME Files), rclover postpones the remount and retries every 5 seconds.
 
 Opening a folder whose listing rclone has not cached waits a round trip on the cloud
 (about 300 ms on Google Drive), and GNOME Files opens every subfolder to count its items.
@@ -60,31 +60,31 @@ keep a 30-minute listing cache.
 A busy mount is never detached lazily: when the last program lets go of a lazily detached
 mount, rclone's cleanup unmounts the mount point, which by then holds the new mount.
 
-Mounting runs on a worker thread, so Nuvolo starts at once even without internet. When the
+Mounting runs on a worker thread, so rclover starts at once even without internet. When the
 system reports no network, a mount fails at once with "no internet connection". For Google
-Drive, OneDrive, Dropbox, Box and pCloud, Nuvolo first looks up the service's address, which
-fails within seconds when the internet is down. Nuvolo waits at most 30 seconds for rclone to
+Drive, OneDrive, Dropbox, Box and pCloud, rclover first looks up the service's address, which
+fails within seconds when the internet is down. rclover waits at most 30 seconds for rclone to
 mount. A mount that rclone completes later is picked up by the watchdog.
 
 A watchdog runs every 5 seconds. It mounts again any account whose mount has disappeared
 or is *dead*: still listed in ``/proc/self/mounts`` but failing with "Transport endpoint is
 not connected" because the rclone serving it is gone. A dead mount is detached before
-mounting; nothing serves it, so that is safe. If rclone itself exits, Nuvolo starts it again
+mounting; nothing serves it, so that is safe. If rclone itself exits, rclover starts it again
 and remounts everything.
 
-On quit, Nuvolo detaches any mount rclone could not release because it was busy, so the
+On quit, rclover detaches any mount rclone could not release because it was busy, so the
 next start never finds a dead mount.
 
-rclone runs with a parent-death signal, so it exits whenever Nuvolo does, even after a crash.
+rclone runs with a parent-death signal, so it exits whenever rclover does, even after a crash.
 
 Offline copies
 --------------
 
 Pinned folders and files also exist as real files in the mount folder, underneath the mount.
-Before mounting, Nuvolo opens the mount folder and keeps it open. Paths through that handle
+Before mounting, rclover opens the mount folder and keeps it open. Paths through that handle
 (``/proc/<pid>/fd/<n>/...``) lead to the covered folder rather than into the mount. The
-symlink ``~/.cache/nuvolo/offline/<remote>`` points there, so rclone's sync state, kept in
-``~/.cache/nuvolo/bisync``, survives restarts.
+symlink ``~/.cache/rclover/offline/<remote>`` points there, so rclone's sync state, kept in
+``~/.cache/rclover/bisync``, survives restarts.
 
 After each mount, after each change of mode, and every 10 minutes, ``offline.rs`` first
 waits until the mount has no uploads left (``vfs/stats``), then moves anything under the
@@ -100,13 +100,13 @@ nothing else writes to the offline copies (every link leads into the mount), so 
 are one-way, cloud to offline copy (``sync/sync``). This matters: edits made through the
 mount upload at the same time as a sync reads the cloud, and bisync stops on such a change
 ("path1 and path2 are out of sync"), after which it must start afresh. A one-way copy
-cannot conflict and simply catches up on its next run. Before a one-way copy, Nuvolo counts
+cannot conflict and simply catches up on its next run. Before a one-way copy, rclover counts
 the files on both sides and stops if more than half, and more than 20, would be deleted
 (rclone's own ``MaxDelete`` deletes up to its limit before stopping). Bisync's own
 percentage stop is turned off for folders under 40 files, where half is a handful.
 
 Conflicts follow the ``conflicts`` setting; bisync names a kept loser ``name.ext.conflict1``,
-which Nuvolo renames to ``name (conflict 1).ext`` in folders. Rules always go in a filters
+which rclover renames to ``name (conflict 1).ext`` in folders. Rules always go in a filters
 file: ``_filter`` and ``_config`` on ``sync/bisync`` change more than they say. A lock left by
 an interrupted sync is removed and the sync retried; after a critical error the pair starts
 afresh (a merge that deletes nothing). An offline copy found empty is refilled from the cloud,
@@ -122,7 +122,7 @@ GNOME Files' trash
 GIO trashes files on a mount into ``<mount>/.Trash-<uid>`` when it can create that folder.
 On a cloud drive that is a server-side move and an uploaded ``.trashinfo`` per item, and the
 files stay in the cloud. ``x-gvfs-notrash`` would turn that off, but rclone's mount helper
-drops ``x-`` options, so GIO never sees it. After each mount, Nuvolo instead puts an empty
+drops ``x-`` options, so GIO never sees it. After each mount, rclover instead puts an empty
 file at ``.Trash-<uid>`` (``block_gnome_trash`` in ``engine/mounts.rs``); GIO then reports
 ``access::can-trash`` false and GNOME Files deletes directly. An existing trash folder is
 renamed to ``Trashed in GNOME Files``, never deleted.
@@ -148,7 +148,7 @@ Known limitations
 * **Pinned files are read through the mount while it is up.** Opening one fetches it from
   the cloud into the on-demand cache, like any other file. If the network drops while the
   drive stays mounted, pinned files not in that cache cannot be opened until it returns or
-  Nuvolo restarts (the offline copies show whenever the drive is not mounted).
+  rclover restarts (the offline copies show whenever the drive is not mounted).
 * **Pause is a bandwidth limit.** rclone has no pause command, so Pause All limits
   bandwidth to 1 byte/s.
 * **Conflicts.** Through the mount, the last write wins. Offline copies keep both versions

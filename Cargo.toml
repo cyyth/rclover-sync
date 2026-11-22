@@ -1,15 +1,15 @@
 [package]
-name = "nuvolo-sync"
+name = "rclover-sync"
 version = "0.2.5"
 edition = "2021"
 rust-version = "1.84"
 license = "GPL-3.0-or-later"
 description = "GNOME cloud-drive manager: on-demand rclone mounts with selective offline folders"
-repository = "https://github.com/cyythanapong-netizen/nuvolo-sync"
+repository = "https://github.com/cyythanapong-netizen/rclover-sync"
 resolver = "3"
 
 [[bin]]
-name = "nuvolo"
+name = "rclover"
 path = "src/main.rs"
 
 [dependencies]

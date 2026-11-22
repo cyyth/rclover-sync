@@ -1,4 +1,4 @@
-//! User configuration, stored as TOML in `~/.config/nuvolo/config.toml`.
+//! User configuration, stored as TOML in `~/.config/rclover/config.toml`.
 
 use gtk::glib;
 use serde::{Deserialize, Serialize};
@@ -167,7 +167,7 @@ impl Default for Config {
 }
 
 pub fn path() -> PathBuf {
-    glib::user_config_dir().join("nuvolo").join("config.toml")
+    glib::user_config_dir().join("rclover").join("config.toml")
 }
 
 /// Loads the config. A file that does not parse is moved aside rather than overwritten later.
@@ -179,7 +179,7 @@ pub fn load() -> Result<Config, String> {
     toml::from_str(&text).or_else(|e| {
         let backup = p.with_extension("toml.bak");
         fs::rename(&p, &backup).map_err(|r| format!("{}: {e}; could not move it aside: {r}", p.display()))?;
-        eprintln!("nuvolo: {} is invalid ({e}); moved to {}", p.display(), backup.display());
+        eprintln!("rclover: {} is invalid ({e}); moved to {}", p.display(), backup.display());
         Ok(Config::default())
     })
 }

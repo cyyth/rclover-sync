@@ -38,7 +38,7 @@ impl Engine {
     pub fn pin(&mut self, abs: &Path) {
         if let Some((i, rel)) = self.locate(abs) {
             if let Err(e) = self.set_mode(i, &rel, Mode::Pinned) {
-                eprintln!("nuvolo: pin {}: {e}", abs.display());
+                eprintln!("rclover: pin {}: {e}", abs.display());
             }
         }
     }
@@ -80,7 +80,7 @@ impl Engine {
                 params["dir"] = json!(dir);
             }
             if let Err(e) = client.call("vfs/refresh", params) {
-                eprintln!("nuvolo: vfs/refresh: {e}");
+                eprintln!("rclover: vfs/refresh: {e}");
             }
             if pinned {
                 let _ = tx.send(super::Done::Refreshed(gen, i));
