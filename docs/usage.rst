@@ -119,7 +119,15 @@ Home folders
 
 Preferences → **Home Folders** moves Documents, Pictures, Music and the other XDG folders
 into the selected drive. The real folder then lives in the drive (for example
-``~/Cloud/gdrive/Documents``), and ``~/Documents`` becomes a link to it.
+``~/Cloud/gdrive/Documents``), and ``~/Documents`` becomes a link to it. **Choose
+Folder…** links it to another folder on the drive instead, which may have a different name
+(for example ``~/Pictures`` → ``~/Cloud/gdrive/Photos``).
+
+All XDG folders are listed, also ones that do not exist yet. Linking a folder keeps its
+entry in ``~/.config/user-dirs.dirs`` and turns off ``xdg-user-dirs-update``
+(``enabled=False`` in ``~/.config/user-dirs.conf``): at login it runs before the drive is
+mounted, sees the link pointing nowhere and resets the folder to ``~``, which removes its
+icon in GNOME Files. rclover also repairs such entries for linked folders when it starts.
 
 That is all a home folder setting does: it makes the link. How the cloud folder is kept is
 set on the **Folders & Cache** page like for any other folder: On-Demand, Offline, or a mix

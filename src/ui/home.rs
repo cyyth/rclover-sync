@@ -26,12 +26,12 @@ impl Ui {
             return;
         };
         let jobs = homedirs::jobs_root();
-        for dir in homedirs::FOLDERS {
-            let Some(home) = homedirs::home_path(dir) else { continue };
+        for (key, home) in homedirs::home_paths() {
             let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let cloud = homedirs::cloud_path(&mount, &home);
             let status = homedirs::status(&home, &mount, &jobs);
-            let (mode, mixed) = self.e.borrow().cfg.accounts.get(self.acct.get()).map_or((Mode::OnDemand, false), |a| (a.mode_of(&name), a.is_mixed(&name)));
+            let cloud = homedirs::cloud_of(&home, &mount, homedirs::read_job(&jobs, &home).as_ref());
+            let rel = homedirs::rel_in(&mount, &cloud);
+            let (mode, mixed) = self.e.borrow().cfg.accounts.get(self.acct.get()).map_or((Mode::OnDemand, false), |a| (a.mode_of(&rel), a.is_mixed(&rel)));
             let kept = match mode {
                 Mode::OnDemand => "On-Demand: files download when opened, so the link needs rclover running",
                 Mode::Pinned => "Offline: kept on this device, also when rclover is not running",
@@ -72,7 +72,7 @@ impl Ui {
                     sub(&format!("On this device ({}). Its cloud folder is set to {kept}", home.display()));
                     self.home_button(&row, "Move to Cloud", false, {
                         let (ui, home, mount) = (self.clone(), home.clone(), mount.clone());
-                        move || ui.link_home(&home, &mount)
+                        move || ui.link_home(key, &home, &mount)
                     });
                 }
                 Status::Linked => {
@@ -147,37 +147,57 @@ impl Ui {
         });
     }
 
-    pub(super) fn link_home(self: &Rc<Self>, home: &Path, mount: &Path) {
+    pub(super) fn link_home(self: &Rc<Self>, key: &'static str, home: &Path, mount: &Path) {
         let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let cloud = homedirs::cloud_path(mount, home);
         let d = adw::AlertDialog::new(
             Some(&format!("Move {name} to the Cloud?")),
             Some(&format!(
-                "{} will become a link to {}. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.\n\nWhat stays on this device follows the Folders & Cache page. Only folders set to Offline are there when rclover is not running.",
+                "{} will become a link to {}, or to another folder on the drive that you choose. Your files are copied into the cloud folder; names that already exist there are kept side by side, never overwritten.\n\nYour current folder is kept as a backup in {}.\n\nWhat stays on this device follows the Folders & Cache page. Only folders set to Offline are there when rclover is not running.",
                 home.display(), cloud.display(), homedirs::backup_root().display()
             )),
         );
         d.add_response("cancel", "Cancel");
-        d.add_response("move", "Move to Cloud");
+        d.add_response("choose", "Choose Folder…");
+        d.add_response("move", &format!("Move to {name}"));
         d.set_response_appearance("move", adw::ResponseAppearance::Suggested);
         let ui = self.clone();
         d.connect_response(Some("cancel"), move |_, _| ui.rebuild_home());
+        let (ui, h, m) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
+        d.connect_response(Some("move"), move |_, _| ui.do_link(key, &h, &cloud, &m));
         let (ui, home, mount) = (self.clone(), home.to_path_buf(), mount.to_path_buf());
-        d.connect_response(Some("move"), move |_, _| {
-            if ui.e.borrow().mounted_account(&mount).is_none() {
-                ui.rebuild_home();
-                return ui.toast("The drive is not mounted; see Overview for why, and try again once it is.");
-            };
-            if let Err(e) = homedirs::link(&home, &mount, &homedirs::backup_root(), &homedirs::jobs_root()) {
-                ui.rebuild_home();
-                return ui.toast(&explain(&format!("Could not move {}: {e}", home.display())));
-            }
-            match homedirs::read_job(&homedirs::jobs_root(), &home) {
-                Some(job) => homedirs::run(&ui.e, home.clone(), mount.clone(), job),
+        d.connect_response(Some("choose"), move |_, _| {
+            let fd = gtk::FileDialog::builder().title(format!("Cloud Folder for {name}")).modal(true).build();
+            fd.set_initial_folder(Some(&gtk::gio::File::for_path(&mount)));
+            let (ui, home, mount) = (ui.clone(), home.clone(), mount.clone());
+            fd.select_folder(Some(&ui.window.clone()), gtk::gio::Cancellable::NONE, move |res| match res.ok().and_then(|f| f.path()) {
+                Some(cloud) if cloud != mount && homedirs::is_inside(&cloud, &mount) => ui.do_link(key, &home, &cloud, &mount),
+                Some(_) => {
+                    ui.rebuild_home();
+                    ui.toast(&format!("Choose a folder inside {}", mount.display()));
+                }
                 None => ui.rebuild_home(),
-            }
+            });
         });
         d.present(Some(&self.window));
+    }
+
+    fn do_link(self: &Rc<Self>, key: &str, home: &Path, cloud: &Path, mount: &Path) {
+        if self.e.borrow().mounted_account(mount).is_none() {
+            self.rebuild_home();
+            return self.toast("The drive is not mounted; see Overview for why, and try again once it is.");
+        };
+        if let Err(e) = homedirs::link(home, cloud, mount, &homedirs::backup_root(), &homedirs::jobs_root()) {
+            self.rebuild_home();
+            return self.toast(&explain(&format!("Could not move {}: {e}", home.display())));
+        }
+        if let Err(e) = homedirs::keep_user_dir(key, home) {
+            eprintln!("rclover: could not keep {} in user-dirs.dirs: {e}", home.display());
+        }
+        match homedirs::read_job(&homedirs::jobs_root(), home) {
+            Some(job) => homedirs::run(&self.e, home.to_path_buf(), mount.to_path_buf(), job),
+            None => self.rebuild_home(),
+        }
     }
 
     pub(super) fn unlink_home(self: &Rc<Self>, home: &Path, mount: &Path) {
@@ -200,7 +220,10 @@ impl Ui {
                 ui.rebuild_home();
                 return ui.toast(&explain(&format!("Could not move it back: {e}")));
             }
-            ui.start_home(home.clone(), mount.clone(), homedirs::Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), error: None });
+            match homedirs::read_job(&homedirs::jobs_root(), &home) {
+                Some(job) => ui.start_home(home.clone(), mount.clone(), job),
+                None => ui.rebuild_home(),
+            }
         });
         d.present(Some(&self.window));
     }

@@ -67,6 +67,7 @@ fn startup(app: &adw::Application) {
         }
     };
     homedirs::adopt_old_moves(&homedirs::jobs_root(), &homedirs::backup_root());
+    homedirs::keep_linked_user_dirs(&e.borrow().cfg.accounts.iter().map(|a| a.mount.clone()).collect::<Vec<_>>());
 
     // Mounts must outlive the window: keep running until Quit.
     std::mem::forget(app.hold());
