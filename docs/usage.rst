@@ -51,6 +51,15 @@ offline is uploaded, deletions included. While the drive is mounted you work in 
 itself, so from then on the copies just follow the cloud. Each sync waits until your recent
 edits have finished uploading.
 
+Renaming or moving an Offline folder, here or anywhere else (for example on the web), is
+followed: its offline copy is renamed and it stays Offline under the new name, with the modes
+of the folders inside it. A notification says so. rclover recognises the folder by the ID the
+cloud gives it, so this works on clouds that have IDs (Google Drive, OneDrive, Dropbox and
+most others; not S3 or SFTP). A folder moved out of its parent folder is found by searching
+all folders of the drive, which takes about two minutes on a drive with 30 000 folders. An
+Offline folder deleted in the cloud has its offline copy moved to the Trash; restore it from
+there to put it back.
+
 If the network drops while a terminal or another program has a folder of the drive open,
 rclover cannot switch to the offline copies. It tells you which programs keep the drive busy
 and tries again by itself once they let go.

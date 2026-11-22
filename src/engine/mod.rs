@@ -66,6 +66,10 @@ pub struct SyncReport {
     pub res: Result<(), OfflineProblem>,
     /// Size of the offline copies on disk.
     pub bytes: u64,
+    /// Pinned paths renamed or moved in the cloud: (old, new).
+    pub moved: Vec<(String, String)>,
+    /// Pinned paths deleted in the cloud.
+    pub gone: Vec<String>,
 }
 
 /// Longest wait between attempts to restart an rclone that keeps stopping, in ticks (seconds).

@@ -6,15 +6,18 @@
 //! - [`mount`]: mounting a remote, and reading the kernel's mount table.
 //! - [`bisync`]: two-way sync between a local folder and the cloud (offline copies).
 //! - [`links`]: share links and browser URLs.
+//! - [`ids`]: cloud IDs, to follow renamed offline folders.
 
 pub(crate) mod bisync;
 mod client;
 mod daemon;
+mod ids;
 mod links;
 mod mount;
 
 pub use bisync::{bisync, mirror, wait_for_uploads, Scope};
 pub use client::Client;
 pub use daemon::{Rcd, RcloneCaps};
+pub use ids::{find_id, id_at};
 pub use links::{public_link, web_url};
 pub use mount::{canonical_mount_path, is_mounted_path, lazy_unmount, mount, mounted_paths, probe_mount, MountHealth};

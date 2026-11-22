@@ -87,7 +87,13 @@ symlink ``~/.cache/rclover/offline/<remote>`` points there, so rclone's sync sta
 ``~/.cache/rclover/bisync``, survives restarts.
 
 After each mount, after each change of mode, and every 10 minutes, ``offline.rs`` first
-waits until the mount has no uploads left (``vfs/stats``), then moves anything under the
+waits until the mount has no uploads left (``vfs/stats``), then checks that each pinned path
+still has the cloud ID it had last time (``operations/stat``; the IDs are kept in
+``~/.cache/rclover/ids-<remote>.json``). A path that lost its ID is looked up by ID, in its
+parent folder and then among all folders (``operations/list``): found, its offline copy is
+renamed and its modes move to the new path; not found, the copy goes to the Trash and the pin
+is dropped. Without this, the old copy would count as no longer pinned and be uploaded again
+under the old name. Then it moves anything under the
 mount that is not pinned into the drive (files written while it was not mounted, or copies
 that are no longer pinned; files the cloud already has with the same MD5, from
 ``operations/hashsum``, are dropped instead of copied as duplicates). Then it syncs each
