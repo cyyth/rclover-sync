@@ -9,13 +9,14 @@ on:
 permissions:
   contents: write
 
+# One RPM for every supported Fedora. It is built on the oldest one (44): its binary needs
+# only stable library versions (glibc, GTK 4, ...), which newer Fedoras keep providing.
+# The install job proves that on the newest one. There is no dist tag (.fc44) in the name,
+# so the file does not look tied to one release.
 jobs:
   rpm:
-    strategy:
-      matrix:
-        fedora: ['44', '45']
     runs-on: ubuntu-latest
-    container: fedora:${{ matrix.fedora }}
+    container: fedora:44
     steps:
       - name: Install build dependencies
         run: dnf install -y git rpm-build make cargo rust gtk4-devel libadwaita-devel
@@ -29,16 +30,41 @@ jobs:
           name=$(rpmspec -q --srpm --qf '%{name}' nuvolo.spec)
           mkdir -p ~/rpmbuild/SOURCES dist
           git archive --format=tar.gz --prefix=nuvolo-sync-$version/ -o ~/rpmbuild/SOURCES/$name-$version.tar.gz HEAD
-          rpmbuild -ba nuvolo.spec
+          rpmbuild -ba --define 'dist %{nil}' nuvolo.spec
           cp ~/rpmbuild/RPMS/*/*.rpm ~/rpmbuild/SRPMS/*.rpm dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rpms-fedora-${{ matrix.fedora }}
+          name: rpms
           path: dist/*.rpm
 
+  install:
+    needs: rpm
+    strategy:
+      matrix:
+        fedora: ['44', '45']
+    runs-on: ubuntu-latest
+    container: fedora:${{ matrix.fedora }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpms
+          path: dist
+
+      - name: Install on Fedora ${{ matrix.fedora }}
+        run: dnf install -y $(ls dist/*.rpm | grep -v '\.src\.rpm$')
+
+  release:
+    needs: install
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpms
+          path: dist
+
       - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.rpm

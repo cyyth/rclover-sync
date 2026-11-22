@@ -30,7 +30,7 @@ This installs into ``~/.local`` by default. Set ``PREFIX`` to change that. It in
 Fedora packages
 ---------------
 
-Every release has RPMs for current Fedora versions attached on GitHub::
+Every release has one RPM, for Fedora 44 and newer, attached on GitHub::
 
    sudo dnf install ./nuvolo-*.rpm
 
