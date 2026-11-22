@@ -24,9 +24,24 @@ pub enum MountHealth {
 /// Mounts an account with a full VFS cache. Slow (it reaches the cloud): call it off the main
 /// thread. Ignore patterns and excluded folders become filter rules.
 ///
+/// Opening a folder whose listing is not cached waits a round trip on the cloud (about 300 ms
+/// on Google Drive), and GNOME Files opens every subfolder to count its items. A cloud that
+/// reports its changes (Google Drive, OneDrive, Dropbox, ...) keeps listings correct through
+/// polling, so they are kept for good and all of them are loaded once, in the background,
+/// after mounting. Other clouds keep the 30-minute listing cache.
+///
 /// The mount point may hold files: the offline copies of pinned folders, which the mount
 /// covers while it is up (see `engine::offline`).
 pub fn mount(c: &Client, cfg: &Config, a: &Account, caps: RcloneCaps) -> Result<(), String> {
+    // Without internet, rclone retries for minutes before mounting fails. Look the service
+    // up first, which fails within seconds, so the user hears "no internet" right away.
+    let kind = c.call_local("config/get", json!({ "name": a.remote }))?["type"].as_str().unwrap_or("").to_owned();
+    if let Some(host) = service_host(&kind) {
+        if (host, 443).to_socket_addrs().is_err() {
+            return Err(NO_INTERNET.to_owned());
+        }
+    }
+    let polls = c.call("operations/fsinfo", json!({ "fs": a.fs() })).is_ok_and(|v| v["Features"]["ChangeNotify"] == true);
     let mut excludes = cfg.ignore.clone();
     excludes.extend(a.modes.iter().filter(|(_, m)| **m == Mode::Excluded).map(|(p, _)| format!("/{p}/**")));
     // Divide the configured on-demand cache budget across accounts so N accounts do not use N × limit.
@@ -37,7 +52,7 @@ pub fn mount(c: &Client, cfg: &Config, a: &Account, caps: RcloneCaps) -> Result<
         "CacheMaxAge": format!("{}h", cfg.cache_max_age_hours),
         "WriteBack": "5s",
         "NoModTime": cfg.no_modtime,
-        "DirCacheTime": "30m",
+        "DirCacheTime": if polls { "100000h" } else { "30m" },
         "PollInterval": "20s",
         "ReadAhead": "32Mi",
         "FastFingerprint": true,
@@ -57,18 +72,17 @@ pub fn mount(c: &Client, cfg: &Config, a: &Account, caps: RcloneCaps) -> Result<
         },
         "_filter": { "ExcludeRule": excludes },
     });
-    // Without internet, rclone retries for minutes before mounting fails. Look the service
-    // up first, which fails within seconds, so the user hears "no internet" right away.
-    let kind = c.call_local("config/get", json!({ "name": a.remote }))?["type"].as_str().unwrap_or("").to_owned();
-    if let Some(host) = service_host(&kind) {
-        if (host, 443).to_socket_addrs().is_err() {
-            return Err(NO_INTERNET.to_owned());
-        }
-    }
-    c.call_for("mount/mount", params, Duration::from_secs(30)).map(|_| ()).map_err(|e| {
+    c.call_for("mount/mount", params, Duration::from_secs(30)).map_err(|e| {
         // Our own wait ran out, not rclone: say so plainly instead of quoting the local request.
         if e.contains("127.0.0.1") { CLOUD_SILENT.to_owned() } else { e }
-    })
+    })?;
+    if polls {
+        // Returns at once; rclone lists the whole drive as a background job.
+        if let Err(e) = c.call_local("vfs/refresh", json!({ "fs": a.fs(), "recursive": "true", "_async": true })) {
+            eprintln!("nuvolo: preloading folder listings of {}: {e}", a.remote);
+        }
+    }
+    Ok(())
 }
 
 /// The API host of cloud services Nuvolo can check before mounting.

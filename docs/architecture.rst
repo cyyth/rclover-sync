@@ -24,7 +24,7 @@ starts with a comment that lists its files.
 ``  pins.rs``          Folder modes and keeping pinned files in the VFS cache.
 ``  states.rs``        The per-file state shown as emblems.
 ``src/rclone/``        Talking to rclone: ``client.rs`` (API), ``daemon.rs``
-                       (process), ``mount.rs``, ``bisync.rs`` (two-way sync),
+                       (process), ``mount.rs``, ``bisync.rs`` (offline-copy sync),
                        ``links.rs``.
 ``src/homedirs/``      Moving home folders: ``mod.rs`` (folder logic and job files),
                        ``copy.rs`` (never-overwrite, resumable copy), ``runner.rs``
@@ -47,6 +47,15 @@ Each account is mounted with ``--vfs-cache-mode full`` and a 5-second write-back
 Ignore patterns and excluded folders become ``--exclude`` rules on the mount, which is
 why changing them needs a remount. While uploads are pending or the mount is busy (for
 example, open in GNOME Files), Nuvolo postpones the remount and retries every 5 seconds.
+
+Opening a folder whose listing rclone has not cached waits a round trip on the cloud
+(about 300 ms on Google Drive), and GNOME Files opens every subfolder to count its items.
+For clouds that report their changes (``ChangeNotify`` in ``operations/fsinfo``: Google
+Drive, OneDrive, Dropbox, ...), polling keeps listings correct, so they never expire
+(``--dir-cache-time 100000h``) and the whole tree is listed once after mounting, in the
+background (``vfs/refresh recursive=true``). On a drive of 270,000 files that takes about two
+minutes and 400 MB of memory; afterwards folders open in a few milliseconds. Other clouds
+keep a 30-minute listing cache.
 
 A busy mount is never detached lazily: when the last program lets go of a lazily detached
 mount, rclone's cleanup unmounts the mount point, which by then holds the new mount.
@@ -77,10 +86,25 @@ Before mounting, Nuvolo opens the mount folder and keeps it open. Paths through 
 symlink ``~/.cache/nuvolo/offline/<remote>`` points there, so rclone's sync state, kept in
 ``~/.cache/nuvolo/bisync``, survives restarts.
 
-After each mount and every 10 minutes, ``offline.rs`` first moves anything under the mount
-that is not pinned into the drive (files written while it was not mounted, or copies that
-are no longer pinned), then syncs each pinned folder with ``sync/bisync`` and each pinned
-file group (the pinned files of one folder) with ``sync/bisync`` limited by a filters file.
+After each mount, after each change of mode, and every 10 minutes, ``offline.rs`` first
+waits until the mount has no uploads left (``vfs/stats``), then moves anything under the
+mount that is not pinned into the drive (files written while it was not mounted, or copies
+that are no longer pinned; files the cloud already has with the same MD5, from
+``operations/hashsum``, are dropped instead of copied as duplicates). Then it syncs each
+pinned folder, and each pinned file group (the pinned files of one folder, limited by a
+filters file).
+
+The first sync of each folder after a mount is two-way (``sync/bisync``): it uploads what
+changed in the offline copy while the drive was not mounted. While the drive stays mounted,
+nothing else writes to the offline copies (every link leads into the mount), so later syncs
+are one-way, cloud to offline copy (``sync/sync``). This matters: edits made through the
+mount upload at the same time as a sync reads the cloud, and bisync stops on such a change
+("path1 and path2 are out of sync"), after which it must start afresh. A one-way copy
+cannot conflict and simply catches up on its next run. Before a one-way copy, Nuvolo counts
+the files on both sides and stops if more than half, and more than 20, would be deleted
+(rclone's own ``MaxDelete`` deletes up to its limit before stopping). Bisync's own
+percentage stop is turned off for folders under 40 files, where half is a handful.
+
 Conflicts follow the ``conflicts`` setting; bisync names a kept loser ``name.ext.conflict1``,
 which Nuvolo renames to ``name (conflict 1).ext`` in folders. Rules always go in a filters
 file: ``_filter`` and ``_config`` on ``sync/bisync`` change more than they say. A lock left by

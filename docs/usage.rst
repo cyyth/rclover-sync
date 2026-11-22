@@ -44,9 +44,16 @@ mounted (no internet), the same path shows the offline copy instead. So anything
 into an Offline folder keeps working at all times: home folders moved to the cloud, and
 files you link from ``~/.config`` (pin the file or its folder).
 
-Nuvolo syncs the copies both ways with the cloud after every mount, every 10 minutes (with
+Nuvolo syncs the copies with the cloud after every mount, every 10 minutes (with
 **Background Sync** on), and on **Sync Now** (Overview page, or the Nuvolo menu in GNOME
-Files). A change on one side is copied to the other, deletions included.
+Files). Right after the drive is mounted, the copies sync both ways: what you changed while
+offline is uploaded, deletions included. While the drive is mounted you work in the drive
+itself, so from then on the copies just follow the cloud. Each sync waits until your recent
+edits have finished uploading.
+
+If the network drops while a terminal or another program has a folder of the drive open,
+Nuvolo cannot switch to the offline copies. It tells you which programs keep the drive busy
+and tries again by itself once they let go.
 
 .. _conflicts:
 
