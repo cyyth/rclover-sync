@@ -1,8 +1,8 @@
 %global debug_package %{nil}
 
 Name:           rclover
-Version:        0.2.5
-Release:        2%{?dist}
+Version:        0.3.0
+Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
 URL:            https://github.com/cyythanapong-netizen/rclover-sync
@@ -18,7 +18,7 @@ Requires:       fuse3
 Recommends:     rclover-nautilus
 # Formerly Nuvolo: replaces it on upgrade.
 Provides:       nuvolo = %{version}-%{release}
-Obsoletes:      nuvolo < 0.2.5-2
+Obsoletes:      nuvolo < 0.3.0
 
 %description
 rclover mounts Google Drive, OneDrive and any other rclone remote under ~/Cloud,
@@ -45,9 +45,13 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Rclover*.svg
 
 %changelog
-* Sun Nov 22 2026 Thanapong Chuangyanyong - 0.2.5-2
+* Sun Nov 22 2026 Thanapong Chuangyanyong - 0.3.0-1
 - Renamed from Nuvolo to rclover (rclone + clover); settings, offline copies and sync state
-  move over on first start
+  move over on first start, and the package replaces nuvolo
+- Offline folders renamed or moved in the cloud stay offline under their new name; ones
+  deleted in the cloud go to the Trash instead of being uploaded again
+- Home Folders lists every XDG folder, can link to any folder on the drive, and keeps
+  user-dirs.dirs from being reset at login (which removed the folder icons in GNOME Files)
 
 * Sun Nov 22 2026 Thanapong Chuangyanyong - 0.2.5-1
 - Offline copies sync both ways once per mount, then follow the cloud one way, so uploads
