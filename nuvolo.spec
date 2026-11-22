@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           nuvolo
-Version:        0.2.4
+Version:        0.2.5
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -42,6 +42,17 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
 
 %changelog
+* Sun Nov 22 2026 Thanapong Chuangyanyong - 0.2.5-1
+- Offline copies sync both ways once per mount, then follow the cloud one way, so uploads
+  through the mount no longer abort syncs or bring deleted files back
+- Syncs wait for pending uploads; safer deletion stops for small and large folders
+- Unpinning no longer copies unchanged files back as duplicates
+- Notification names the programs keeping the drive busy when going offline
+- rclone restarts back off instead of retrying every 5 s
+- Folder listings are kept and preloaded on clouds that report changes: folders open in
+  milliseconds in GNOME Files
+- One RPM for Fedora 44 and newer
+
 * Fri Nov 20 2026 Thanapong Chuangyanyong - 0.2.4-1
 - Fix rclone dying immediately after startup: spawn rclone rcd from a dedicated long-lived
   background thread so PR_SET_PDEATHSIG does not fire when a short-lived worker exits
