@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           rclover
-Version:        0.3.0
+Version:        0.3.1
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -45,6 +45,12 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Rclover*.svg
 
 %changelog
+* Sun Nov 22 2026 Thanapong Chuangyanyong - 0.3.1-1
+- Upgrading from Nuvolo keeps the sync state of offline folders, so files deleted in the
+  cloud are no longer uploaded again
+- Flatpak apps (Steam, ...) start again after a home folder is moved to the cloud or back:
+  their leftover links and empty folders in ~/.var/app are removed
+
 * Sun Nov 22 2026 Thanapong Chuangyanyong - 0.3.0-1
 - Renamed from Nuvolo to rclover (rclone + clover); settings, offline copies and sync state
   move over on first start, and the package replaces nuvolo
