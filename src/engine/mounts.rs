@@ -143,6 +143,11 @@ impl Engine {
     /// Mounts every account that is not mounted, now: for the Retry button and for when the
     /// network comes back.
     pub fn retry_mounts(&mut self) {
+        for i in std::mem::take(&mut self.offline_busy) {
+            if let Some(a) = self.cfg.accounts.get(i) {
+                notify::withdraw(&format!("offline-busy-{}", a.remote));
+            }
+        }
         if self.rclone_error.is_some() {
             self.retry_rclone();
             return;
@@ -156,6 +161,9 @@ impl Engine {
     /// A mount finished, one way or the other.
     pub(super) fn mounted(&mut self, i: usize, res: Result<(), String>, held: Option<File>) {
         self.mounting.remove(&i);
+        // A new mount: each offline copy syncs both ways once before it mirrors the cloud.
+        *self.mount_epoch.entry(i).or_insert(0) += 1;
+        self.offline_pushed.remove(&i);
         if let Some(f) = held {
             self.offline_dirs.entry(i).or_insert(f);
         }
@@ -249,6 +257,10 @@ impl Engine {
 
     pub(super) fn unmounted(&mut self, i: usize, res: Result<(), String>, kind: UnmountKind) {
         self.unmounting.remove(&i);
+        if res.is_ok() {
+            // The offline copies show now, and may be edited: the next mount syncs them both ways.
+            self.offline_pushed.remove(&i);
+        }
         let Some(remote) = self.cfg.accounts.get(i).map(|a| a.remote.clone()) else { return };
         match (kind, res) {
             (UnmountKind::Remount, Ok(())) => {
@@ -260,10 +272,27 @@ impl Engine {
                 self.remount_later.insert(i);
             }
             (UnmountKind::Offline, Ok(())) => {
+                if self.offline_busy.remove(&i) {
+                    notify::withdraw(&format!("offline-busy-{remote}"));
+                }
                 self.mount_errors.insert(remote, NO_INTERNET.to_owned());
             }
             (UnmountKind::Offline, Err(e)) => {
                 eprintln!("nuvolo: could not unmount {remote} for offline mode (busy?): {e}");
+                // Tell the user once what keeps it busy; the health tick tries again.
+                if self.offline_busy.insert(i) {
+                    let mount = self.cfg.accounts[i].mount.clone();
+                    let who = holders(&mount);
+                    let names = if who.is_empty() { "A program".to_owned() } else { who.iter().map(|n| format!("“{n}”")).collect::<Vec<_>>().join(", ") };
+                    notify::notify(
+                        &format!("offline-busy-{remote}"),
+                        &format!("Offline copies of “{remote}” cannot be shown"),
+                        &format!(
+                            "{names} has {} open, so Nuvolo cannot switch it to the offline copies. Close it (or leave that folder in a terminal); Nuvolo tries again by itself.",
+                            mount.display()
+                        ),
+                    );
+                }
             }
             (UnmountKind::Unhealthy, Ok(())) => {
                 self.unhealthy_strikes.remove(&i);
@@ -283,6 +312,9 @@ impl Engine {
     /// helper, a manual unmount, EIO/timeouts, a suspend glitch), so ~/Cloud never silently
     /// goes empty or wedged.
     pub(super) fn heal_mounts(&mut self, unhealthy: &HashMap<usize, MountHealth>) {
+        if !self.offline_busy.is_empty() {
+            self.unmount_for_offline(); // a program had a drive open; it may have let go
+        }
         // Clear strike counts for healthy accounts and recover mounts that came up late.
         let late: Vec<usize> = (0..self.cfg.accounts.len())
             .filter(|i| !unhealthy.contains_key(i))
@@ -333,6 +365,29 @@ impl Engine {
     }
 }
 
+/// Names of the programs (other than Nuvolo) with a file, folder or working directory inside
+/// `mount`, which keep it from being unmounted. Reads only `/proc` links: never touches the
+/// mount itself, so it is quick even when the mount does not answer.
+pub fn holders(mount: &Path) -> Vec<String> {
+    let me = std::process::id().to_string();
+    let mount = rclone::canonical_mount_path(mount);
+    let inside = |link: &Path| fs::read_link(link).is_ok_and(|t| t.starts_with(&mount));
+    let mut names: Vec<String> = fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|p| p.file_name().to_str().is_some_and(|n| n != me && n.bytes().all(|b| b.is_ascii_digit())))
+        .filter(|p| {
+            let dir = p.path();
+            inside(&dir.join("cwd")) || fs::read_dir(dir.join("fd")).into_iter().flatten().flatten().any(|fd| inside(&fd.path()))
+        })
+        .filter_map(|p| fs::read_to_string(p.path().join("comm")).ok().map(|c| c.trim().to_owned()))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Readies the mount folder off the main thread: clears a dead mount left by a crashed rclone,
 /// creates the folder, and opens an fd to keep offline copies under it reachable once covered.
 fn prepare_mount_point_bg(mount: &Path, need_offline_handle: bool, offline_link: &Path) -> Result<Option<File>, String> {
@@ -366,6 +421,19 @@ fn prepare_mount_point_bg(mount: &Path, need_offline_handle: bool, offline_link:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_programs_working_in_a_folder() {
+        let d = std::env::temp_dir().join(format!("nuvolo-holders-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut child = std::process::Command::new("sleep").arg("5").current_dir(&d).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let who = holders(&d);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(who, vec!["sleep".to_owned()]);
+        let _ = std::fs::remove_dir_all(d);
+    }
 
     #[test]
     fn gnome_trash_is_blocked_and_an_old_one_kept() {

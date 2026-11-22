@@ -7,13 +7,13 @@
 //! - [`bisync`]: two-way sync between a local folder and the cloud (offline copies).
 //! - [`links`]: share links and browser URLs.
 
-mod bisync;
+pub(crate) mod bisync;
 mod client;
 mod daemon;
 mod links;
 mod mount;
 
-pub use bisync::{bisync, Scope};
+pub use bisync::{bisync, mirror, wait_for_uploads, Scope};
 pub use client::Client;
 pub use daemon::{Rcd, RcloneCaps};
 pub use links::{public_link, web_url};

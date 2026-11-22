@@ -49,13 +49,27 @@ pub enum Done {
     Mounted(u64, usize, Result<(), String>, Option<File>),
     /// Unmounting account `i` finished.
     Unmounted(u64, usize, Result<(), String>, UnmountKind),
-    /// Syncing the offline copies of account `i` finished; with their size on disk.
-    Synced(u64, usize, Result<(), OfflineProblem>, u64),
+    /// Syncing the offline copies of account `i` finished.
+    Synced(u64, usize, SyncReport),
     /// `vfs/refresh` for `sync_now` finished; pinned folders can now run bisync.
     Refreshed(u64, usize),
     /// `core/bwlimit` pause/resume finished.
     Paused(u64, bool, Result<(), String>),
 }
+
+/// What one offline sync of an account did.
+pub struct SyncReport {
+    /// The account's mount epoch when the sync started.
+    pub epoch: u64,
+    /// Sync units that were synced both ways (they only follow the cloud from now on).
+    pub pushed: Vec<String>,
+    pub res: Result<(), OfflineProblem>,
+    /// Size of the offline copies on disk.
+    pub bytes: u64,
+}
+
+/// Longest wait between attempts to restart an rclone that keeps stopping, in ticks (seconds).
+const MAX_RESTART_DELAY: u64 = 300;
 
 /// A home-folder move that is running now (see `homedirs::runner`).
 pub struct Progress {
@@ -75,6 +89,11 @@ pub struct Engine {
     pub rclone_starting: bool,
     pub rclone_error: Option<String>,
     poll_failures: u32,
+    /// Restarts of rclone since it last ran for a while, and the tick of the next attempt.
+    rclone_restarts: u32,
+    next_restart: u64,
+    /// The tick rclone last became ready.
+    rclone_ready_at: u64,
     cache_dir: PathBuf,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
@@ -110,12 +129,18 @@ pub struct Engine {
     remount_later: HashSet<usize>,
     /// Consecutive EIO / timeout mount-health strikes per account.
     unhealthy_strikes: HashMap<usize, u32>,
+    /// Counts each account's mounts, to tell one mount from the next.
+    mount_epoch: HashMap<usize, u64>,
+    /// Accounts that could not be unmounted for offline use because a program had them open.
+    offline_busy: HashSet<usize>,
 
     // Offline copies, from `offline`.
     /// An open handle on each account's mount folder, taken before mounting.
     offline_dirs: HashMap<usize, File>,
     /// Accounts whose offline copies are syncing now.
     offline_running: HashSet<usize>,
+    /// Sync units of each account synced both ways since it was mounted (see `offline`).
+    offline_pushed: HashMap<usize, HashSet<String>>,
     /// Why the last sync of an account's offline copies failed, by remote.
     offline_errors: HashMap<String, OfflineProblem>,
     /// Size of each account's offline copies after the last sync, by remote.
@@ -140,6 +165,9 @@ impl Engine {
             rclone_starting: false,
             rclone_error: None,
             poll_failures: 0,
+            rclone_restarts: 0,
+            next_restart: 0,
+            rclone_ready_at: 0,
             cfg,
             cache_dir,
             done_tx,
@@ -162,8 +190,11 @@ impl Engine {
             unmounting: HashSet::new(),
             remount_later: HashSet::new(),
             unhealthy_strikes: HashMap::new(),
+            mount_epoch: HashMap::new(),
+            offline_busy: HashSet::new(),
             offline_dirs: HashMap::new(),
             offline_running: HashSet::new(),
+            offline_pushed: HashMap::new(),
             offline_errors: HashMap::new(),
             offline_bytes: HashMap::new(),
             jobs: HashMap::new(),
@@ -186,6 +217,7 @@ impl Engine {
         self.mounting.clear();
         self.unmounting.clear();
         self.offline_running.clear();
+        self.offline_pushed.clear();
         self.poll_failures = 0;
         let port = self.cfg.rc_port;
         let cache_dir = self.cache_dir.clone();
@@ -210,6 +242,7 @@ impl Engine {
                 self.rcd = Some(rcd);
                 self.rclone_error = None;
                 self.poll_failures = 0;
+                self.rclone_ready_at = self.ticks;
                 self.apply_options();
                 for i in 0..self.cfg.accounts.len() {
                     self.mount(i);
@@ -237,15 +270,37 @@ impl Engine {
     }
 
     /// Restarts rclone in the background if it died (or never started).
+    ///
+    /// Waits 5 s before the first attempt, then twice as long after each attempt, up to
+    /// 5 minutes; the wait resets once rclone has run for 2 minutes.
     pub(super) fn ensure_rclone(&mut self) {
-        if self.stopped || self.rclone_starting || self.rcd.as_mut().is_some_and(|r| r.alive()) {
+        if self.stopped || self.rclone_starting {
             return;
         }
-        if self.ticks % 5 != 0 {
-            return; // retry every 5 s while rclone will not start
+        if self.rcd.as_mut().is_some_and(|r| r.alive()) {
+            if self.rclone_restarts > 0 && self.ticks.saturating_sub(self.rclone_ready_at) > 120 {
+                self.rclone_restarts = 0;
+                crate::notify::withdraw("rclone-restarts");
+            }
+            return;
         }
-        eprintln!("nuvolo: rclone is not running, starting it again");
+        if self.next_restart == 0 {
+            self.next_restart = self.ticks + 5;
+        }
+        if self.ticks < self.next_restart {
+            return;
+        }
+        self.rclone_restarts += 1;
+        let delay = restart_delay(self.rclone_restarts);
+        self.next_restart = 0;
+        eprintln!("nuvolo: rclone is not running, starting it again (attempt {}; next in {delay} s)", self.rclone_restarts);
+        if self.rclone_restarts == 3 {
+            let log = self.cache_dir.join("rclone.log");
+            crate::notify::notify("rclone-restarts", "rclone keeps stopping", &format!("Nuvolo keeps restarting it, waiting longer each time. Details are in {}.", log.display()));
+        }
         self.spawn_rclone();
+        // Applies once this attempt has died too (next_restart is set from the current tick).
+        self.next_restart = self.ticks + delay;
     }
 
     /// Handles everything background work has reported since the last call, ignoring stale
@@ -256,7 +311,7 @@ impl Engine {
                 Done::RcloneReady(gen, res) if gen == self.rclone_gen => self.rclone_ready(res),
                 Done::Mounted(gen, i, res, held) if gen == self.rclone_gen => self.mounted(i, res, held),
                 Done::Unmounted(gen, i, res, kind) if gen == self.rclone_gen => self.unmounted(i, res, kind),
-                Done::Synced(gen, i, res, bytes) if gen == self.rclone_gen => self.synced(i, res, bytes),
+                Done::Synced(gen, i, report) if gen == self.rclone_gen => self.synced(i, report),
                 Done::Refreshed(gen, i) if gen == self.rclone_gen => self.sync_offline(i),
                 Done::Paused(gen, on, res) if gen == self.rclone_gen => match res {
                     Ok(()) => self.paused = on,
@@ -343,5 +398,19 @@ impl Engine {
         let client = self.client.clone()?;
         let (i, rel) = self.locate(abs)?;
         Some((client, self.cfg.accounts[i].remote.clone(), rel))
+    }
+}
+
+/// Seconds to wait after the `n`th restart of rclone in a row: 5, 10, 20 … up to 5 minutes.
+fn restart_delay(n: u32) -> u64 {
+    (5u64 << n.saturating_sub(1).min(6)).min(MAX_RESTART_DELAY)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rclone_restarts_back_off() {
+        let d: Vec<u64> = (1..=8).map(super::restart_delay).collect();
+        assert_eq!(d, [5, 10, 20, 40, 80, 160, 300, 300]);
     }
 }
