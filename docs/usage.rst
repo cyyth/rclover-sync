@@ -138,6 +138,13 @@ entry in ``~/.config/user-dirs.dirs`` and turns off ``xdg-user-dirs-update``
 mounted, sees the link pointing nowhere and resets the folder to ``~``, which removes its
 icon in GNOME Files. rclover also repairs such entries for linked folders when it starts.
 
+Flatpak apps that may use a home folder (Steam, for example, may read Music and Pictures) keep
+a link to it, or an empty folder, in their own home under ``~/.var/app``. Once the home folder
+is moved, that leftover stops the app from starting ("bwrap: Can't make symlink at
+~/Music: destination exists and is not a symlink"). rclover removes such leftovers when it
+links a folder, when it moves one back, and when it starts; Flatpak makes them anew. It only
+removes links and empty folders, never a folder with files in it.
+
 That is all a home folder setting does: it makes the link. How the cloud folder is kept is
 set on the **Folders & Cache** page like for any other folder: On-Demand, Offline, or a mix
 of modes for the folders inside it. Each row shows the current mode. A folder set to

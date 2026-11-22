@@ -45,20 +45,27 @@ fn nuvolo_running() -> bool {
     fs::read_dir("/proc").into_iter().flatten().flatten().any(|p| fs::read_to_string(p.path().join("comm")).is_ok_and(|c| c.trim() == OLD))
 }
 
-/// rclone names a pair's listings and locks after both paths, with `/` and `:` as `_`
-/// (`_home_me_.cache_nuvolo_offline_gdrive..gdrive_.lst`), and rclover keeps its first-run
-/// markers in the `rclover` folder under the same names. Renamed, so the next sync carries on
-/// instead of starting afresh, which would bring back files deleted while offline.
+/// rclone names a pair's listings and locks after both paths, with `/` and `:` as `_` and
+/// without the leading `/` (`home_me_.cache_nuvolo_offline_gdrive..gdrive_.path1.lst`).
+/// rclover keeps its first-run markers in the `rclover` folder, named the same way but with
+/// the leading `_`. Both are renamed, so the next sync carries on instead of starting afresh,
+/// which would bring back files deleted in the cloud.
 fn rename_bisync_state(workdir: &Path, old: &Path, new: &Path) {
     let key = |p: &Path| p.display().to_string().replace(['/', ':'], "_");
     let (from, to) = (key(old), key(new));
+    let (from_rclone, to_rclone) = (from.trim_start_matches('_'), to.trim_start_matches('_'));
     let _ = fs::rename(workdir.join(OLD), workdir.join("rclover"));
     for dir in [workdir.to_path_buf(), workdir.join("rclover")] {
         for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if let Some(rest) = name.strip_prefix(&from) {
-                let _ = fs::rename(entry.path(), dir.join(format!("{to}{rest}")));
-            }
+            let renamed = match name.strip_prefix(&from) {
+                Some(rest) => format!("{to}{rest}"),
+                None => match name.strip_prefix(from_rclone) {
+                    Some(rest) => format!("{to_rclone}{rest}"),
+                    None => continue,
+                },
+            };
+            let _ = fs::rename(entry.path(), dir.join(renamed));
         }
     }
 }
@@ -87,14 +94,16 @@ mod tests {
         let key = |p: &Path| p.display().to_string().replace(['/', ':'], "_");
         let wd = new.join("bisync");
         fs::create_dir_all(wd.join("nuvolo")).unwrap();
-        let listing = format!("{}_offline_gdrive..gdrive_.path1.lst", key(&old));
+        // rclone's listing has no leading `_`; rclover's marker has one.
+        let listing = format!("{}_offline_gdrive..gdrive_.path1.lst", key(&old).trim_start_matches('_'));
+        let marker = format!("{}_offline_gdrive..gdrive_..86f9db044c45c72c", key(&old));
+        assert!(!listing.starts_with('_') && marker.starts_with('_'));
         fs::write(wd.join(&listing), "").unwrap();
-        fs::write(wd.join("nuvolo").join(&listing), "").unwrap();
+        fs::write(wd.join("nuvolo").join(&marker), "").unwrap();
         fs::write(wd.join("other..x.lst"), "").unwrap();
         rename_bisync_state(&wd, &old, &new);
-        let renamed = format!("{}_offline_gdrive..gdrive_.path1.lst", key(&new));
-        assert!(wd.join(&renamed).exists());
-        assert!(wd.join("rclover").join(&renamed).exists(), "first-run marker kept");
+        assert!(wd.join(format!("{}_offline_gdrive..gdrive_.path1.lst", key(&new).trim_start_matches('_'))).exists(), "rclone's listing");
+        assert!(wd.join("rclover").join(format!("{}_offline_gdrive..gdrive_..86f9db044c45c72c", key(&new))).exists(), "first-run marker");
         assert!(wd.join("other..x.lst").exists(), "unrelated names untouched");
 
         let jobs = new.join("jobs");
