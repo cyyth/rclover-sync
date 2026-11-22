@@ -2,16 +2,16 @@
 //! mount folder itself, underneath the mount.
 //!
 //! While the drive is mounted, the mount covers them and `~/Cloud/<remote>` shows the live
-//! drive. When Nuvolo is not running, or the drive could not be mounted (no internet), the
+//! drive. When rclover is not running, or the drive could not be mounted (no internet), the
 //! same paths show the offline copies. So links into pinned folders (home folders, dotfiles
 //! in ~/.config) keep working at all times.
 //!
-//! How the covered folder stays reachable: before mounting, Nuvolo opens the mount folder and
+//! How the covered folder stays reachable: before mounting, rclover opens the mount folder and
 //! keeps it open. Paths through that handle (`/proc/<pid>/fd/<n>/...`) lead under the mount,
-//! not into it. A stable symlink, `~/.cache/nuvolo/offline/<remote>`, points there, so
+//! not into it. A stable symlink, `~/.cache/rclover/offline/<remote>`, points there, so
 //! rclone's two-way sync state survives restarts.
 //!
-//! While the drive is mounted, nothing but Nuvolo writes to the offline copies: every link
+//! While the drive is mounted, nothing but rclover writes to the offline copies: every link
 //! leads into the mount. So after each mount, each copy is synced both ways once
 //! ([`rclone::bisync`]), which uploads what changed while the drive was not mounted. After
 //! that, until the drive is unmounted, the copies only follow the cloud ([`rclone::mirror`]),
@@ -24,6 +24,11 @@
 //! Anything else found under the mount (written while it was not mounted, or a copy that is
 //! no longer pinned) is moved into the drive first, so it gets uploaded instead of staying
 //! hidden under the mount. Files the cloud already has, byte for byte, are not copied again.
+//!
+//! A pinned folder renamed or moved in the cloud (through the mount, or elsewhere) is followed
+//! by its cloud ID: its offline copy is renamed and the pin, with the modes inside it, moves to
+//! the new path. One deleted in the cloud has its offline copy moved to the Trash. Either way the
+//! old copy is never mistaken for loose files and uploaded again under the old name.
 //!
 //! Pinned files are not loaded into rclone's VFS cache: the offline copies are the fixed
 //! baseline of local storage, and the VFS cache limit is only the space for on-demand files.
@@ -96,6 +101,8 @@ impl Engine {
             pushed: self.offline_pushed.get(&i).cloned().unwrap_or_default(),
             under: self.offline_link(&a.remote),
             workdir: self.cache_dir.join("bisync"),
+            ids: self.cache_dir.join(format!("ids-{}.json", a.remote)),
+            trash: gtk::glib::user_data_dir().join("Trash"),
             pinned,
             excluded,
             excludes,
@@ -108,8 +115,7 @@ impl Engine {
         let epoch = self.mount_epoch.get(&i).copied().unwrap_or(0);
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
-            let (res, bytes, pushed) = job.run();
-            let _ = tx.send(Done::Synced(gen, i, SyncReport { epoch, pushed, res, bytes }));
+            let _ = tx.send(Done::Synced(gen, i, SyncReport { epoch, ..job.run() }));
         });
     }
 
@@ -122,6 +128,18 @@ impl Engine {
         }
         let (res, bytes) = (r.res, r.bytes);
         let Some(remote) = self.cfg.accounts.get(i).map(|a| a.remote.clone()) else { return };
+        if !r.moved.is_empty() || !r.gone.is_empty() {
+            let a = &mut self.cfg.accounts[i];
+            for (old, new) in &r.moved {
+                a.move_modes(old, new);
+                notify::notify(&format!("moved-{remote}-{old}"), &format!("“{old}” is now “{new}”"), "It was renamed or moved in the cloud, and stays on this device under its new name.");
+            }
+            for rel in &r.gone {
+                a.forget(rel);
+                notify::notify(&format!("gone-{remote}-{rel}"), &format!("“{rel}” was deleted in the cloud"), "Its offline copy is in the Trash. Restore it from there to put it back in the drive.");
+            }
+            self.save();
+        }
         self.offline_bytes.insert(remote.clone(), bytes);
         let id = format!("offline-{remote}");
         match res {
@@ -158,6 +176,10 @@ struct OfflineJob {
     /// The folder under the mount (through the held handle).
     under: PathBuf,
     workdir: PathBuf,
+    /// Cloud IDs of the pinned paths, as last seen (`ids-<remote>.json` in the cache).
+    ids: PathBuf,
+    /// The user's Trash (`~/.local/share/Trash`), for offline copies of deleted folders.
+    trash: PathBuf,
     pinned: Vec<String>,
     /// Excluded roots, skipped by stray rescue.
     excluded: Vec<String>,
@@ -168,14 +190,14 @@ struct OfflineJob {
 }
 
 impl OfflineJob {
-    /// Waits for uploads, moves loose files into the drive, then syncs each pinned folder, then
-    /// the pinned single files (grouped by folder). Goes on past a failing folder, and reports
-    /// the first failure. Returns the result, the total size of offline copies, and the units
-    /// that were synced both ways.
-    fn run(&self) -> (Result<(), OfflineProblem>, u64, Vec<String>) {
+    /// Waits for uploads, follows pinned folders renamed in the cloud, moves loose files into
+    /// the drive, then syncs each pinned folder, then the pinned single files (grouped by
+    /// folder). Goes on past a failing folder, and reports the first failure. The report's
+    /// `epoch` is left for the caller.
+    fn run(&self) -> SyncReport {
         let mount = &self.account.mount;
         let fail = |what: &str, raw: String| {
-            eprintln!("nuvolo: offline copy of {what}: {raw}");
+            eprintln!("rclover: offline copy of {what}: {raw}");
             OfflineProblem {
                 text: format!("“{what}”: {}", explain(&raw)),
                 can_force: raw.contains("too many deletes") || raw.contains("all files were changed"),
@@ -185,14 +207,19 @@ impl OfflineJob {
         let fs_ = self.account.fs();
         rclone::wait_for_uploads(&self.client, &fs_, Duration::from_secs(600));
         let prune = |local: &Path, rel: &str| prune_identical(&self.client, local, &format!("{fs_}{rel}"));
-        if let Err(e) = rescue_strays(&self.under, mount, &self.pinned, &self.excluded, &prune) {
+        let followed = self.follow_renames(&fs_);
+        if let Some((what, e)) = followed.problem {
+            first = Some(fail(&what, e));
+        }
+        let kept: Vec<String> = followed.pinned.iter().chain(&followed.held).cloned().collect();
+        if let Err(e) = rescue_strays(&self.under, mount, &kept, &self.excluded, &prune) {
             first = Some(fail("files saved while the drive was not mounted", e.to_string()));
         }
         let tidy = self.policy == ConflictPolicy::KeepBoth;
         let mut total_bytes: u64 = 0;
         let mut pushed_now = Vec::new();
         let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (rel, excludes) in self.pinned.iter().zip(&self.excludes) {
+        for (rel, excludes) in followed.pinned.iter().zip(&followed.excludes) {
             let local = if rel.is_empty() { self.under.clone() } else { self.under.join(rel) };
             // A pinned path is a file if either side says so (the cloud side, through the mount).
             if local.is_file() || mount.join(rel).is_file() {
@@ -250,8 +277,164 @@ impl OfflineJob {
                 total_bytes += du(&local.join(name));
             }
         }
-        (first.map_or(Ok(()), Err), total_bytes, pushed_now)
+        SyncReport { epoch: 0, pushed: pushed_now, res: first.map_or(Ok(()), Err), bytes: total_bytes, moved: followed.moved, gone: followed.gone }
     }
+
+    /// Checks each pinned path's cloud ID against the one last seen, and follows a rename,
+    /// move or deletion (see [`follow`]). Without a recorded ID nothing changes.
+    fn follow_renames(&self, fs_: &str) -> Followed {
+        let mut ids: BTreeMap<String, String> = fs::read(&self.ids).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let before = ids.clone();
+        let mut f = Followed::default();
+        for (rel, excludes) in self.pinned.iter().zip(&self.excludes) {
+            let action = if rel.is_empty() {
+                Follow::Keep // the whole drive
+            } else {
+                follow(ids.get(rel).map(String::as_str), rclone::id_at(&self.client, fs_, rel), |id| rclone::find_id(&self.client, fs_, rel, id))
+            };
+            let mut problem = |e: io::Error| {
+                f.problem.get_or_insert((rel.clone(), e.to_string()));
+                f.held.push(rel.clone());
+            };
+            match action {
+                Follow::Keep => {}
+                Follow::Record(id) => {
+                    ids.insert(rel.clone(), id);
+                }
+                Follow::Unknown => {
+                    f.held.push(rel.clone()); // left as it is until the cloud can be asked again
+                    continue;
+                }
+                Follow::Moved(new) => {
+                    match move_copy(&self.under, rel, &new) {
+                        Ok(()) => {
+                            eprintln!("rclover: “{rel}” is now “{new}” in the cloud; its offline copy follows");
+                            let id = ids.remove(rel).unwrap_or_default();
+                            ids.insert(new.clone(), id);
+                            f.moved.push((rel.clone(), new.clone()));
+                            f.pinned.push(new);
+                            f.excludes.push(excludes.clone());
+                        }
+                        Err(e) => problem(e),
+                    }
+                    continue;
+                }
+                Follow::Deleted { replaced } => {
+                    match trash_copy(&self.under, &self.account.mount, rel, &self.trash) {
+                        Ok(()) => {
+                            eprintln!("rclover: “{rel}” was deleted in the cloud; its offline copy is in the Trash");
+                            ids.remove(rel);
+                            if !replaced {
+                                f.gone.push(rel.clone());
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            problem(e);
+                            continue;
+                        }
+                    }
+                }
+            }
+            f.pinned.push(rel.clone());
+            f.excludes.push(excludes.clone());
+        }
+        ids.retain(|k, _| f.pinned.contains(k));
+        if ids != before {
+            if let Err(e) = serde_json::to_vec(&ids).map_err(io::Error::other).and_then(|b| fs::write(&self.ids, b)) {
+                eprintln!("rclover: could not save {}: {e}", self.ids.display());
+            }
+        }
+        f
+    }
+}
+
+/// Pinned paths after following renames, for one offline sync.
+#[derive(Default)]
+struct Followed {
+    /// Pinned roots to sync, and their exclude rules.
+    pinned: Vec<String>,
+    excludes: Vec<Vec<String>>,
+    /// Offline copies left alone this time; never treated as loose files.
+    held: Vec<String>,
+    moved: Vec<(String, String)>,
+    gone: Vec<String>,
+    /// Which pinned path, and what went wrong.
+    problem: Option<(String, String)>,
+}
+
+/// What became of a pinned path in the cloud.
+#[derive(Debug, PartialEq, Eq)]
+enum Follow {
+    /// As before (or nothing to compare with).
+    Keep,
+    /// Still there; remember this ID.
+    Record(String),
+    /// The cloud could not be asked.
+    Unknown,
+    /// Renamed or moved to this path.
+    Moved(String),
+    /// Deleted in the cloud; `replaced` if something else now has its path.
+    Deleted { replaced: bool },
+}
+
+/// Decides from `recorded`, the ID last seen at the path, and `at`, the ID there now.
+/// `find(id)` searches the cloud for where that ID went. With no recorded ID, a missing path is
+/// new on this device (made while offline) and is uploaded as usual.
+fn follow(recorded: Option<&str>, at: Result<Option<String>, String>, find: impl FnOnce(&str) -> Result<Option<String>, String>) -> Follow {
+    let Ok(at) = at else { return Follow::Keep };
+    match (at, recorded) {
+        (Some(id), r) if id.is_empty() || r.is_none_or(|r| r == id) => {
+            if id.is_empty() || r == Some(id.as_str()) {
+                Follow::Keep
+            } else {
+                Follow::Record(id)
+            }
+        }
+        (_, None) => Follow::Keep,
+        (at, Some(old)) => match find(old) {
+            Err(_) => Follow::Unknown,
+            Ok(Some(new)) => Follow::Moved(new),
+            Ok(None) => Follow::Deleted { replaced: at.is_some() },
+        },
+    }
+}
+
+/// Renames the offline copy of `old` to `new` (both relative to `under`).
+fn move_copy(under: &Path, old: &str, new: &str) -> io::Result<()> {
+    let (from, to) = (under.join(old), under.join(new));
+    if from.symlink_metadata().is_err() {
+        return Ok(()); // no copy yet
+    }
+    if to.symlink_metadata().is_ok() {
+        return Err(io::Error::other(format!("it is now “{new}” in the cloud, but something is already there on this device")));
+    }
+    fs::create_dir_all(to.parent().expect("inside under"))?;
+    fs::rename(from, to)
+}
+
+/// Moves the offline copy of `rel` to the Trash (freedesktop.org Trash spec), recorded as
+/// coming from its path in the drive, so restoring it puts it back into the cloud.
+fn trash_copy(under: &Path, mount: &Path, rel: &str, trash: &Path) -> io::Result<()> {
+    let from = under.join(rel);
+    if from.symlink_metadata().is_err() {
+        return Ok(());
+    }
+    let (files, info) = (trash.join("files"), trash.join("info"));
+    fs::create_dir_all(&files)?;
+    fs::create_dir_all(&info)?;
+    let base = rel.rsplit('/').next().unwrap_or(rel);
+    let name = (1..)
+        .map(|n| if n == 1 { base.to_owned() } else { format!("{base}.{n}") })
+        .find(|n| files.join(n).symlink_metadata().is_err() && info.join(format!("{n}.trashinfo")).symlink_metadata().is_err())
+        .expect("a free name exists");
+    let date = gtk::glib::DateTime::now_local().ok().and_then(|d| d.format("%Y-%m-%dT%H:%M:%S").ok()).map(|s| s.to_string()).unwrap_or_default();
+    let path = gtk::glib::Uri::escape_string(&mount.join(rel).to_string_lossy(), Some("/"), false);
+    let info_file = info.join(format!("{name}.trashinfo"));
+    fs::write(&info_file, format!("[Trash Info]\nPath={path}\nDeletionDate={date}\n"))?;
+    fs::rename(&from, files.join(&name)).inspect_err(|_| {
+        let _ = fs::remove_file(&info_file);
+    })
 }
 
 /// Names one sync unit: a pinned folder, or the pinned single files of one folder.
@@ -403,6 +586,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn follows_renames_and_deletions_by_cloud_id() {
+        let found = |p: &str| { let p = p.to_owned(); move |_: &str| Ok(Some(p)) };
+        let not_found = |_: &str| Ok(None);
+        let no_search = |_: &str| -> Result<Option<String>, String> { panic!("no search needed") };
+        // First sight records the ID; same ID again changes nothing.
+        assert_eq!(follow(None, Ok(Some("A".into())), no_search), Follow::Record("A".into()));
+        assert_eq!(follow(Some("A"), Ok(Some("A".into())), no_search), Follow::Keep);
+        // A cloud without IDs, or the cloud not answering: as before.
+        assert_eq!(follow(Some("A"), Ok(Some(String::new())), no_search), Follow::Keep);
+        assert_eq!(follow(Some("A"), Err("offline".into()), no_search), Follow::Keep);
+        // Never seen in the cloud: made on this device while offline, uploaded as usual.
+        assert_eq!(follow(None, Ok(None), no_search), Follow::Keep);
+        // Gone from its path: renamed or moved, or deleted.
+        assert_eq!(follow(Some("A"), Ok(None), found("Projects/rclover")), Follow::Moved("Projects/rclover".into()));
+        assert_eq!(follow(Some("A"), Ok(None), not_found), Follow::Deleted { replaced: false });
+        assert_eq!(follow(Some("A"), Ok(None), |_| Err("timeout".into())), Follow::Unknown);
+        // Another folder took its name: the pinned one is followed by ID all the same.
+        assert_eq!(follow(Some("A"), Ok(Some("B".into())), found("Old/nuvolo")), Follow::Moved("Old/nuvolo".into()));
+        assert_eq!(follow(Some("A"), Ok(Some("B".into())), not_found), Follow::Deleted { replaced: true });
+    }
+
+    #[test]
+    fn a_renamed_or_deleted_folder_is_not_uploaded_again() {
+        let root = std::env::temp_dir().join(format!("rclover-follow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (under, mount, trash) = (root.join("under"), root.join("mount"), root.join("Trash"));
+        fs::create_dir_all(under.join("Projects/nuvolo/src")).unwrap();
+        fs::write(under.join("Projects/nuvolo/src/main.rs"), "fn main() {}").unwrap();
+        fs::create_dir_all(under.join("Old")).unwrap();
+        fs::write(under.join("Old/notes.txt"), "keep me").unwrap();
+        fs::create_dir_all(&mount).unwrap();
+
+        move_copy(&under, "Projects/nuvolo", "Projects/rclover").unwrap();
+        assert_eq!(fs::read_to_string(under.join("Projects/rclover/src/main.rs")).unwrap(), "fn main() {}");
+        assert!(!under.join("Projects/nuvolo").exists());
+        assert!(move_copy(&under, "Old", "Projects/rclover").is_err(), "never merged into something already there");
+
+        trash_copy(&under, &mount, "Old", &trash).unwrap();
+        assert!(!under.join("Old").exists());
+        assert_eq!(fs::read_to_string(trash.join("files/Old/notes.txt")).unwrap(), "keep me");
+        let info = fs::read_to_string(trash.join("info/Old.trashinfo")).unwrap();
+        assert!(info.contains(&format!("Path={}/Old\n", mount.display())), "{info}");
+        fs::create_dir_all(under.join("Old")).unwrap();
+        trash_copy(&under, &mount, "Old", &trash).unwrap();
+        assert!(trash.join("files/Old.2").is_dir(), "a second one gets a free name");
+        assert!(move_copy(&under, "Missing", "Elsewhere").is_ok() && trash_copy(&under, &mount, "Missing", &trash).is_ok(), "no copy, nothing to do");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn nested_pins_and_excludes_are_relative_to_the_synced_folder() {
         let mut a = Account::new("t");
         a.modes.insert("Projects".into(), Mode::Pinned);
@@ -417,7 +650,7 @@ mod tests {
 
     #[test]
     fn conflict_copies_get_readable_names() {
-        let d = std::env::temp_dir().join(format!("nuvolo-conflicts-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-conflicts-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("sub")).unwrap();
         for f in ["notes.txt.conflict1", "sub/Makefile.conflict2", "photo.conflict.jpg", "plain.txt"] {
@@ -434,7 +667,7 @@ mod tests {
     #[test]
     fn strays_refuse_to_move_onto_the_same_disk() {
         // Without a mount, "under" and "mount" are the same folder: nothing may be moved.
-        let d = std::env::temp_dir().join(format!("nuvolo-strays-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-strays-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("loose")).unwrap();
         fs::write(d.join("loose/a.txt"), "keep me").unwrap();
@@ -445,7 +678,7 @@ mod tests {
 
     #[test]
     fn stray_rescue_keeps_same_size_different_file() {
-        let root = std::env::temp_dir().join(format!("nuvolo-stray-same-size-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rclover-stray-same-size-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (under, mount) = (root.join("under"), root.join("mount"));
         fs::create_dir_all(&under).unwrap();
@@ -463,7 +696,7 @@ mod tests {
 
     #[test]
     fn stray_rescue_skips_excluded_roots() {
-        let root = std::env::temp_dir().join(format!("nuvolo-stray-excl-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rclover-stray-excl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (under, mount) = (root.join("under"), root.join("mount"));
         fs::create_dir_all(under.join("Work/build")).unwrap();

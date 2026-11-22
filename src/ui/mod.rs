@@ -1,4 +1,4 @@
-//! The Nuvolo window: an account sidebar and four pages. Built on first use and then kept
+//! The rclover window: an account sidebar and four pages. Built on first use and then kept
 //! (closing only hides it); [`refresh`] redraws the visible page once a second.
 //!
 //! - [`accounts`]: the sidebar: listing, selecting and adding accounts.
@@ -16,6 +16,7 @@ mod help;
 mod home;
 mod overview;
 mod prefs;
+pub(crate) use prefs::set_autostart;
 mod transfers;
 mod widgets;
 
@@ -76,13 +77,13 @@ pub fn refresh_home() {
 pub fn fatal(app: &adw::Application, msg: &str) {
     let page = adw::StatusPage::builder()
         .icon_name("dialog-error-symbolic")
-        .title("Nuvolo Could Not Start")
+        .title("rclover Could Not Start")
         .description(glib::markup_escape_text(msg).as_str())
         .build();
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&adw::HeaderBar::new());
     tv.set_content(Some(&page));
-    adw::ApplicationWindow::builder().application(app).title("Nuvolo").default_width(520).default_height(420).content(&tv).build().present();
+    adw::ApplicationWindow::builder().application(app).title("rclover").default_width(520).default_height(420).content(&tv).build().present();
 }
 
 pub struct Ui {
@@ -116,7 +117,7 @@ impl Ui {
     fn new(app: &adw::Application, e: &Shared) -> Rc<Ui> {
         let window = adw::ApplicationWindow::builder()
             .application(app)
-            .title("Nuvolo")
+            .title("rclover")
             .default_width(1100)
             .default_height(760)
             .hide_on_close(true)
@@ -129,7 +130,7 @@ impl Ui {
         let menu = gio::Menu::new();
         menu.append(Some("Add Cloud Account…"), Some("app.add-account"));
         menu.append(Some("Help"), Some("app.help"));
-        menu.append(Some("About Nuvolo"), Some("app.about"));
+        menu.append(Some("About rclover"), Some("app.about"));
         menu.append(Some("Quit"), Some("app.quit"));
         header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Main Menu").build());
         let theme_btn = gtk::Button::builder().icon_name("weather-clear-night-symbolic").tooltip_text("Toggle light/dark style").build();
@@ -181,8 +182,8 @@ impl Ui {
         sb_tv.set_content(Some(&gtk::ScrolledWindow::builder().child(&sb).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build()));
 
         let split = adw::NavigationSplitView::new();
-        split.set_sidebar(Some(&adw::NavigationPage::new(&sb_tv, "Nuvolo")));
-        split.set_content(Some(&adw::NavigationPage::new(&toasts, "Nuvolo")));
+        split.set_sidebar(Some(&adw::NavigationPage::new(&sb_tv, "rclover")));
+        split.set_content(Some(&adw::NavigationPage::new(&toasts, "rclover")));
         window.set_content(Some(&split));
         let bp = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 640sp").expect("valid breakpoint"));
         bp.add_setter(&split, "collapsed", Some(&true.to_value()));
@@ -275,17 +276,17 @@ impl Ui {
 
     pub fn about(&self) {
         let d = adw::AboutDialog::builder()
-            .application_name("Nuvolo")
+            .application_name("rclover")
             .application_icon(crate::APP_ID)
             .version(env!("CARGO_PKG_VERSION"))
             .comments("Cloud drives on demand for GNOME, powered by rclone.")
-            .developer_name("Nuvolo contributors")
+            .developer_name("rclover contributors")
             .license_type(gtk::License::Gpl30)
             .website(crate::REPO_URL)
             .issue_url(format!("{}/issues", crate::REPO_URL))
             .build();
         d.add_link("Documentation", crate::DOCS_URL);
-        d.add_link("GNOME Files Extension", "https://github.com/cyythanapong-netizen/nuvolo-nautilus");
+        d.add_link("GNOME Files Extension", "https://github.com/cyythanapong-netizen/rclover-nautilus");
         d.add_link("rclone", "https://rclone.org");
         d.present(Some(&self.window));
     }

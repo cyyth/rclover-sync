@@ -925,22 +925,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nuvolo-sync"
-version = "0.2.5"
-dependencies = [
- "async-channel",
- "base64",
- "gtk4",
- "ksni",
- "libadwaita",
- "libc",
- "serde",
- "serde_json",
- "toml 0.8.23",
- "ureq",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1076,6 +1060,22 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "rclover-sync"
+version = "0.3.0"
+dependencies = [
+ "async-channel",
+ "base64",
+ "gtk4",
+ "ksni",
+ "libadwaita",
+ "libc",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+ "ureq",
+]
 
 [[package]]
 name = "rustc_version"

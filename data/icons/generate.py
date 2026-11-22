@@ -1,11 +1,11 @@
-"""Generates the Nuvolo icons as clean vector paths. Run: python3 data/icons/generate.py data/icons (needs shapely)."""
+"""Generates the rclover icons as clean vector paths. Run: python3 data/icons/generate.py data/icons (needs shapely)."""
 import sys
 from shapely.geometry import Point, LineString
 from shapely.ops import unary_union
 from shapely import affinity
 
 OUT = sys.argv[1]
-ID = "io.github.cyythanapong_netizen.Nuvolo"
+ID = "io.github.cyythanapong_netizen.Rclover"
 
 def leaf():
     """A heart: two teardrops (round lobe + shared tip), so the sides run smoothly into the

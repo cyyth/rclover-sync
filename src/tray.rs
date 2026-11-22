@@ -38,7 +38,7 @@ impl ksni::Tray for Tray {
     }
 
     fn title(&self) -> String {
-        "Nuvolo".into()
+        "rclover".into()
     }
 
     fn icon_name(&self) -> String {
@@ -46,7 +46,7 @@ impl ksni::Tray for Tray {
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
-        ksni::ToolTip { title: "Nuvolo".into(), description: self.status.clone(), ..Default::default() }
+        ksni::ToolTip { title: "rclover".into(), description: self.status.clone(), ..Default::default() }
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
@@ -70,7 +70,7 @@ impl ksni::Tray for Tray {
                 ..Default::default()
             }
             .into(),
-            StandardItem { label: "Open Nuvolo".into(), activate: Box::new(|t: &mut Self| t.send(Cmd::Open)), ..Default::default() }.into(),
+            StandardItem { label: "Open rclover".into(), activate: Box::new(|t: &mut Self| t.send(Cmd::Open)), ..Default::default() }.into(),
             StandardItem { label: "Preferences".into(), activate: Box::new(|t: &mut Self| t.send(Cmd::Preferences)), ..Default::default() }.into(),
             MenuItem::Separator,
             StandardItem { label: "Quit".into(), activate: Box::new(|t: &mut Self| t.send(Cmd::Quit)), ..Default::default() }.into(),
@@ -85,7 +85,7 @@ pub fn spawn() -> (Option<Handle>, async_channel::Receiver<Cmd>) {
     match tray.spawn() {
         Ok(handle) => (Some(handle), rx),
         Err(e) => {
-            eprintln!("nuvolo: no tray icon ({e}); is the AppIndicator extension enabled?");
+            eprintln!("rclover: no tray icon ({e}); is the AppIndicator extension enabled?");
             (None, rx)
         }
     }

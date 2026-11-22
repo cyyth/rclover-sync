@@ -26,11 +26,11 @@ jobs:
       - name: Build RPM
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          version=$(rpmspec -q --srpm --qf '%{version}' nuvolo.spec)
-          name=$(rpmspec -q --srpm --qf '%{name}' nuvolo.spec)
+          version=$(rpmspec -q --srpm --qf '%{version}' rclover-sync.spec)
+          name=$(rpmspec -q --srpm --qf '%{name}' rclover-sync.spec)
           mkdir -p ~/rpmbuild/SOURCES dist
-          git archive --format=tar.gz --prefix=nuvolo-sync-$version/ -o ~/rpmbuild/SOURCES/$name-$version.tar.gz HEAD
-          rpmbuild -ba --define 'dist %{nil}' nuvolo.spec
+          git archive --format=tar.gz --prefix=rclover-sync-$version/ -o ~/rpmbuild/SOURCES/$name-$version.tar.gz HEAD
+          rpmbuild -ba --define 'dist %{nil}' rclover-sync.spec
           cp ~/rpmbuild/RPMS/*/*.rpm ~/rpmbuild/SRPMS/*.rpm dist/
 
       - uses: actions/upload-artifact@v4

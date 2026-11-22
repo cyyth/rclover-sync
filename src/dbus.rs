@@ -7,12 +7,12 @@ use gtk::{gio, glib};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub const IFACE: &str = "io.github.cyythanapong_netizen.Nuvolo1";
-pub const PATH: &str = "/io/github/cyythanapong_netizen/Nuvolo";
-const ERROR: &str = "io.github.cyythanapong_netizen.Nuvolo1.Error";
+pub const IFACE: &str = "io.github.cyythanapong_netizen.Rclover1";
+pub const PATH: &str = "/io/github/cyythanapong_netizen/Rclover";
+const ERROR: &str = "io.github.cyythanapong_netizen.Rclover1.Error";
 
 const XML: &str = r#"<node>
-  <interface name="io.github.cyythanapong_netizen.Nuvolo1">
+  <interface name="io.github.cyythanapong_netizen.Rclover1">
     <method name="GetMounts"><arg type="as" direction="out"/></method>
     <method name="GetStates"><arg name="paths" type="as" direction="in"/><arg type="a{ss}" direction="out"/></method>
     <method name="GetStatesWithTypes"><arg name="entries" type="a(sb)" direction="in"/><arg type="a{ss}" direction="out"/></method>
@@ -36,7 +36,7 @@ pub fn export(conn: &gio::DBusConnection, e: Shared) {
         .method_call(move |_, _, _, _, method, params, inv| handle(&e, &c, method, params, inv))
         .build();
     if let Err(err) = res {
-        eprintln!("nuvolo: could not export D-Bus interface: {err}");
+        eprintln!("rclover: could not export D-Bus interface: {err}");
     }
 }
 
@@ -46,7 +46,7 @@ pub fn emit_changed(conn: &gio::DBusConnection, paths: &[PathBuf]) {
     }
     let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
     if let Err(err) = conn.emit_signal(None, PATH, IFACE, "StatesChanged", Some(&(paths,).to_variant())) {
-        eprintln!("nuvolo: StatesChanged: {err}");
+        eprintln!("rclover: StatesChanged: {err}");
     }
 }
 
@@ -59,7 +59,7 @@ fn handle(e: &Shared, conn: &gio::DBusConnection, method: &str, params: glib::Va
             inv.return_value(Some(&(m,).to_variant()));
         }
         "GetStatesWithTypes" => {
-            // The caller already knows which entries are directories, so Nuvolo can answer from
+            // The caller already knows which entries are directories, so rclover can answer from
             // its in-memory config/engine state and local VFS cache without touching the mount.
             let entries: Vec<(String, bool)> = params.get::<(Vec<(String, bool)>,)>().map(|t| t.0).unwrap_or_default();
             let e = e.borrow();
@@ -71,7 +71,7 @@ fn handle(e: &Shared, conn: &gio::DBusConnection, method: &str, params: glib::Va
         }
         "GetStates" | "GetDirStates" => {
             // Looking at files goes through the mount, which can wait on the network: do it
-            // off the main thread, so neither Nuvolo nor GNOME Files freezes meanwhile.
+            // off the main thread, so neither rclover nor GNOME Files freezes meanwhile.
             let (paths, dir) = if method == "GetStates" { (paths(), None) } else { (Vec::new(), Some(PathBuf::from(path()))) };
             if dir.as_ref().is_some_and(|d| e.borrow().locate(d).is_none()) {
                 return inv.return_value(Some(&(HashMap::<String, String>::new(),).to_variant()));
@@ -109,7 +109,7 @@ fn handle(e: &Shared, conn: &gio::DBusConnection, method: &str, params: glib::Va
         }
         "GetShareLink" | "GetWebUrl" => {
             let Some((client, remote, rel)) = e.borrow().link_job(Path::new(&path())) else {
-                return inv.return_dbus_error(ERROR, "not inside a Nuvolo mount");
+                return inv.return_dbus_error(ERROR, "not inside an rclover mount");
             };
             let web = method == "GetWebUrl";
             glib::spawn_future_local(async move {

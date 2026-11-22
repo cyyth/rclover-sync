@@ -1,10 +1,10 @@
 Configuration
 =============
 
-Settings are stored in ``~/.config/nuvolo/config.toml``. The Preferences page edits
-this file. Editing it by hand while Nuvolo is closed also works.
+Settings are stored in ``~/.config/rclover/config.toml``. The Preferences page edits
+this file. Editing it by hand while rclover is closed also works.
 
-If the file does not parse, Nuvolo moves it to ``config.toml.bak`` and starts with defaults.
+If the file does not parse, rclover moves it to ``config.toml.bak`` and starts with defaults.
 
 Example
 -------
@@ -59,5 +59,5 @@ Keys
    Folder paths relative to the remote root, each mapped to ``on-demand``, ``pinned``
    or ``excluded``. The empty key ``""`` is the remote root.
 
-Cache data and rclone's error log (``rclone.log``) are kept in ``~/.cache/nuvolo``. Nuvolo
+Cache data and rclone's error log (``rclone.log``) are kept in ``~/.cache/rclover``. rclover
 requires rclone 1.66 or newer.

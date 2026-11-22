@@ -1,7 +1,9 @@
-Nuvolo
-======
+rclover
+=======
 
-Nuvolo is a GNOME app that mounts cloud drives under ``~/Cloud`` with
+rclover — rclone + clover
+
+rclover is a GNOME app that mounts cloud drives under ``~/Cloud`` with
 `rclone <https://rclone.org>`_. Files are downloaded when you open them, and the
 folders you pin stay available offline.
 

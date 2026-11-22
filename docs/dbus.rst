@@ -1,12 +1,12 @@
 D-Bus interface
 ===============
 
-Nuvolo exports one interface on its application bus name. The GNOME Files extension uses
+rclover exports one interface on its application bus name. The GNOME Files extension uses
 it. This document is the contract between the two repositories.
 
-:Bus name: ``io.github.cyythanapong_netizen.Nuvolo`` (session bus, D-Bus activatable)
-:Object path: ``/io/github/cyythanapong_netizen/Nuvolo``
-:Interface: ``io.github.cyythanapong_netizen.Nuvolo1``
+:Bus name: ``io.github.cyythanapong_netizen.Rclover`` (session bus, D-Bus activatable)
+:Object path: ``/io/github/cyythanapong_netizen/Rclover``
+:Interface: ``io.github.cyythanapong_netizen.Rclover1``
 
 All paths are absolute local paths inside a mount, such as
 ``/home/me/Cloud/gdrive/Documents/a.pdf``.
@@ -27,7 +27,7 @@ Methods
 
 ``GetStatesWithTypes(a(sb) entries) → a{ss}``
    The state of each ``(path, is_directory)`` entry. Because the caller supplies whether
-   each path is a directory, Nuvolo answers from its in-memory state and local cache without
+   each path is a directory, rclover answers from its in-memory state and local cache without
    reading or stating the FUSE mount.
 
 ``GetDirStates(s dir) → a{ss}``
@@ -50,7 +50,7 @@ Methods
    A URL that opens the file in the provider's web interface. Backends without a direct
    URL return a share link instead.
 
-Errors are returned as ``io.github.cyythanapong_netizen.Nuvolo1.Error``.
+Errors are returned as ``io.github.cyythanapong_netizen.Rclover1.Error``.
 
 Signals
 -------

@@ -267,8 +267,8 @@ pub(super) fn autostart_file() -> std::path::PathBuf {
     glib::user_config_dir().join("autostart").join(format!("{}.desktop", crate::APP_ID))
 }
 
-/// Adds or removes an XDG autostart entry that starts Nuvolo as a background service.
-fn set_autostart(on: bool) -> std::io::Result<()> {
+/// Adds or removes an XDG autostart entry that starts rclover as a background service.
+pub(crate) fn set_autostart(on: bool) -> std::io::Result<()> {
     let path = autostart_file();
     if !on {
         return match std::fs::remove_file(&path) {
@@ -281,7 +281,7 @@ fn set_autostart(on: bool) -> std::io::Result<()> {
     std::fs::write(
         &path,
         format!(
-            "[Desktop Entry]\nType=Application\nName=Nuvolo\nComment=Mount cloud drives at login\nExec={} --gapplication-service\nIcon={}\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
+            "[Desktop Entry]\nType=Application\nName=rclover\nComment=Mount cloud drives at login\nExec={} --gapplication-service\nIcon={}\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
             desktop_exec_quote(&exe),
             crate::APP_ID
         ),
@@ -315,10 +315,10 @@ mod tests {
 
     #[test]
     fn quotes_desktop_exec_paths() {
-        assert_eq!(desktop_exec_quote(Path::new("/usr/bin/nuvolo")), "\"/usr/bin/nuvolo\"");
+        assert_eq!(desktop_exec_quote(Path::new("/usr/bin/rclover")), "\"/usr/bin/rclover\"");
         assert_eq!(
-            desktop_exec_quote(Path::new("/home/me/My Apps/nuvolo 100% \"beta\"\\bin")),
-            "\"/home/me/My Apps/nuvolo 100%% \\\"beta\\\"\\\\bin\""
+            desktop_exec_quote(Path::new("/home/me/My Apps/rclover 100% \"beta\"\\bin")),
+            "\"/home/me/My Apps/rclover 100%% \\\"beta\\\"\\\\bin\""
         );
     }
 }

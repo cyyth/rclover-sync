@@ -5,7 +5,7 @@
 //! is renamed to a backup first, then its contents are copied into the cloud folder, keeping
 //! both copies when a name already exists there.
 //!
-//! A move in progress is recorded in a job file (`~/.local/share/nuvolo/jobs/Documents.json`)
+//! A move in progress is recorded in a job file (`~/.local/share/rclover/jobs/Documents.json`)
 //! before anything changes, and removed only once it has finished. So after a failure, a quit or
 //! a crash, [`status`] knows the folder is half-moved and the move can be resumed or undone.
 //! Copying is safe to repeat: a file already copied is skipped, not duplicated.
@@ -26,24 +26,112 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 
-pub const FOLDERS: [UserDirectory; 7] = [
-    UserDirectory::Desktop,
-    UserDirectory::Documents,
-    UserDirectory::Downloads,
-    UserDirectory::Music,
-    UserDirectory::Pictures,
-    UserDirectory::Videos,
-    UserDirectory::Templates,
+/// The XDG folders: glib's id, the `XDG_<KEY>_DIR` key in user-dirs.dirs, the default name.
+pub const FOLDERS: [(UserDirectory, &str, &str); 8] = [
+    (UserDirectory::Desktop, "DESKTOP", "Desktop"),
+    (UserDirectory::Documents, "DOCUMENTS", "Documents"),
+    (UserDirectory::Downloads, "DOWNLOAD", "Downloads"),
+    (UserDirectory::Music, "MUSIC", "Music"),
+    (UserDirectory::Pictures, "PICTURES", "Pictures"),
+    (UserDirectory::Videos, "VIDEOS", "Videos"),
+    (UserDirectory::Templates, "TEMPLATES", "Templates"),
+    (UserDirectory::PublicShare, "PUBLICSHARE", "Public"),
 ];
 
-/// The folder in ~ (as configured in user-dirs.dirs), skipping ones set to ~ itself.
-pub fn home_path(dir: UserDirectory) -> Option<PathBuf> {
-    glib::user_special_dir(dir).filter(|p| p != &glib::home_dir())
+/// All XDG home folders, as configured in user-dirs.dirs. One set to ~ itself (which
+/// xdg-user-dirs-update does at login when a link dangles because the drive is not mounted
+/// yet) falls back to its default name, so it is still listed.
+pub fn home_paths() -> impl Iterator<Item = (&'static str, PathBuf)> {
+    let home = glib::home_dir();
+    FOLDERS.iter().map(move |&(dir, key, name)| {
+        (key, glib::user_special_dir(dir).filter(|p| p != &home).unwrap_or_else(|| home.join(name)))
+    })
 }
 
-/// Where the folder lives inside a mount.
+/// Where the folder lives inside a mount by default.
 pub fn cloud_path(mount: &Path, home: &Path) -> PathBuf {
     mount.join(home.file_name().unwrap_or_default())
+}
+
+/// The cloud folder `home` uses: the link's target if it is linked into `mount`, else where the
+/// job says, else the default.
+pub fn cloud_of(home: &Path, mount: &Path, job: Option<&Job>) -> PathBuf {
+    fs::read_link(home)
+        .ok()
+        .filter(|t| points_into(t, mount))
+        .or_else(|| job.and_then(|j| j.cloud.clone()))
+        .unwrap_or_else(|| cloud_path(mount, home))
+}
+
+/// `cloud` relative to `mount` ("Documents", "Photos/Phone"), as folder modes are keyed.
+pub fn rel_in(mount: &Path, cloud: &Path) -> String {
+    cloud
+        .strip_prefix(mount)
+        .map(Path::to_path_buf)
+        .or_else(|_| crate::rclone::canonical_mount_path(cloud).strip_prefix(crate::rclone::canonical_mount_path(mount)).map(Path::to_path_buf))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| cloud.file_name().unwrap_or_default().to_string_lossy().into_owned())
+}
+
+/// True if `path` is inside `mount` (also `mount` itself).
+pub fn is_inside(path: &Path, mount: &Path) -> bool {
+    points_into(path, mount)
+}
+
+/// Keeps `XDG_<key>_DIR` pointing at `home` in user-dirs.dirs, and turns off
+/// xdg-user-dirs-update (user-dirs.conf `enabled=False`): at login it runs before the drive is
+/// mounted, sees the linked folder dangling and resets it to ~, which drops its icon in Files.
+pub fn keep_user_dir(key: &str, home: &Path) -> io::Result<()> {
+    let cfg = glib::user_config_dir();
+    fs::create_dir_all(&cfg)?;
+    let conf = cfg.join("user-dirs.conf");
+    let old = fs::read_to_string(&conf).unwrap_or_default();
+    if !old.lines().any(|l| l.trim().eq_ignore_ascii_case("enabled=false")) {
+        let kept: String = old.lines().filter(|l| !l.trim_start().starts_with("enabled")).map(|l| l.to_owned() + "\n").collect();
+        fs::write(&conf, format!("{kept}enabled=False\n"))?;
+    }
+    let dirs = cfg.join("user-dirs.dirs");
+    let old = fs::read_to_string(&dirs).unwrap_or_default();
+    let new = set_user_dir(&old, key, home, &glib::home_dir());
+    if new != old {
+        let tmp = dirs.with_extension("dirs.tmp");
+        fs::write(&tmp, new)?;
+        fs::rename(tmp, &dirs)?;
+        glib::reload_user_special_dirs_cache();
+    }
+    Ok(())
+}
+
+/// Runs [`keep_user_dir`] for every home folder linked into one of `mounts`, repairing entries
+/// that xdg-user-dirs-update reset to ~ before rclover turned it off.
+pub fn keep_linked_user_dirs(mounts: &[PathBuf]) {
+    for (key, home) in home_paths() {
+        if fs::read_link(&home).is_ok_and(|t| mounts.iter().any(|m| points_into(&t, m))) {
+            if let Err(e) = keep_user_dir(key, &home) {
+                eprintln!("rclover: could not keep {} in user-dirs.dirs: {e}", home.display());
+            }
+        }
+    }
+}
+
+/// user-dirs.dirs text with `XDG_<key>_DIR` set to `path` (written as "$HOME/..." when in ~).
+fn set_user_dir(text: &str, key: &str, path: &Path, home: &Path) -> String {
+    let value = match path.strip_prefix(home) {
+        Ok(rel) => format!("$HOME/{}", rel.display()),
+        Err(_) => path.display().to_string(),
+    };
+    let var = format!("XDG_{key}_DIR=");
+    let line = format!("{var}\"{value}\"");
+    let mut found = false;
+    let mut out: String = text
+        .lines()
+        .map(|l| if l.starts_with(&var) { found = true; line.clone() } else { l.to_owned() })
+        .map(|l| l + "\n")
+        .collect();
+    if !found {
+        out += &(line + "\n");
+    }
+    out
 }
 
 /// True if `target` points inside `mount` (comparing both raw and canonicalized mount paths).
@@ -57,9 +145,9 @@ pub fn is_linked(home: &Path, mount: &Path) -> bool {
     fs::read_link(home).is_ok_and(|t| points_into(&t, mount))
 }
 
-/// Where originals are kept: ~/.local/share/nuvolo/backups (same filesystem as ~).
+/// Where originals are kept: ~/.local/share/rclover/backups (same filesystem as ~).
 pub fn backup_root() -> PathBuf {
-    glib::user_data_dir().join("nuvolo").join("backups")
+    glib::user_data_dir().join("rclover").join("backups")
 }
 
 fn backup_path(root: &Path, home: &Path) -> PathBuf {
@@ -68,9 +156,9 @@ fn backup_path(root: &Path, home: &Path) -> PathBuf {
     root.join(format!("{name}-{stamp}"))
 }
 
-/// Where job files are kept: ~/.local/share/nuvolo/jobs.
+/// Where job files are kept: ~/.local/share/rclover/jobs.
 pub fn jobs_root() -> PathBuf {
-    glib::user_data_dir().join("nuvolo").join("jobs")
+    glib::user_data_dir().join("rclover").join("jobs")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +179,9 @@ pub struct Job {
     /// The mount point this move targets, so recovery works even if `home` is missing.
     #[serde(default)]
     pub mount: Option<PathBuf>,
+    /// The cloud folder, when not the default `mount/<name>` (older job files have none).
+    #[serde(default)]
+    pub cloud: Option<PathBuf>,
     /// Why the last attempt stopped, if it failed.
     pub error: Option<String>,
 }
@@ -154,24 +245,31 @@ pub fn status(home: &Path, mount: &Path, jobs: &Path) -> Status {
     }
 }
 
-/// Replaces `home` with a symlink to its cloud copy and records a [`Op::Link`] job. The
-/// contents still have to be copied with [`finish`] (slow, run it off the main thread).
-pub fn link(home: &Path, mount: &Path, backups: &Path, jobs: &Path) -> io::Result<()> {
-    let cloud = cloud_path(mount, home);
+/// Replaces `home` with a symlink to `cloud` (a folder inside `mount`, created if missing) and
+/// records a [`Op::Link`] job. The contents still have to be copied with [`finish`] (slow, run
+/// it off the main thread). A missing `home` is created empty first.
+pub fn link(home: &Path, cloud: &Path, mount: &Path, backups: &Path, jobs: &Path) -> io::Result<()> {
+    if !is_inside(cloud, mount) {
+        return Err(io::Error::other(format!("{} is not on the drive", cloud.display())));
+    }
+    if home.symlink_metadata().is_err() {
+        fs::create_dir_all(home)?;
+    }
     if fs::symlink_metadata(home)?.file_type().is_symlink() {
         return Err(io::Error::other(format!("{} is already a link", home.display())));
     }
-    fs::create_dir_all(&cloud)?;
+    fs::create_dir_all(cloud)?;
     let backup = backup_path(backups, home);
     fs::create_dir_all(backups)?;
     // Recorded first, so a crash at any later point is seen as an unfinished move.
-    write_job(jobs, home, &Job { op: Op::Link, backup: Some(backup.clone()), mount: Some(mount.to_path_buf()), error: None })?;
+    let job = Job { op: Op::Link, backup: Some(backup.clone()), mount: Some(mount.to_path_buf()), cloud: Some(cloud.to_path_buf()), error: None };
+    write_job(jobs, home, &job)?;
     // Same filesystem (both in ~), so this is an atomic rename, not a copy.
     if let Err(e) = fs::rename(home, &backup) {
         clear_job(jobs, home);
         return Err(e);
     }
-    if let Err(e) = std::os::unix::fs::symlink(&cloud, home) {
+    if let Err(e) = std::os::unix::fs::symlink(cloud, home) {
         fs::rename(&backup, home)?; // put it back
         clear_job(jobs, home);
         return Err(e);
@@ -184,18 +282,27 @@ pub fn start_unlink(home: &Path, mount: &Path, jobs: &Path) -> io::Result<()> {
     if !is_linked(home, mount) {
         return Err(io::Error::other(format!("{} is not stored in the cloud", home.display())));
     }
-    write_job(jobs, home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.to_path_buf()), error: None })
+    let cloud = fs::read_link(home)?;
+    write_job(jobs, home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.to_path_buf()), cloud: Some(cloud), error: None })
 }
 
+/// Where a move back is assembled. One left by a move that Nuvolo (rclover's old name) started
+/// is taken over under the new name.
 fn staging(home: &Path) -> PathBuf {
-    home.with_file_name(format!(".{}.nuvolo-restore", home.file_name().unwrap_or_default().to_string_lossy()))
+    let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let new = home.with_file_name(format!(".{name}.rclover-restore"));
+    let old = home.with_file_name(format!(".{name}.nuvolo-restore"));
+    if !new.exists() && old.is_dir() {
+        let _ = fs::rename(&old, &new);
+    }
+    new
 }
 
 /// Does (or resumes) the copying of an unfinished move. The caller clears the job: a move back
 /// is complete on success, a move to the cloud once its uploads are done. Slow: run it off the
 /// main thread.
 pub fn finish(home: &Path, mount: &Path, job: &Job, copied: &AtomicUsize) -> io::Result<()> {
-    let cloud = cloud_path(mount, home);
+    let cloud = cloud_of(home, mount, Some(job));
     match job.op {
         Op::Link => {
             let backup = job.backup.as_deref().ok_or_else(|| io::Error::other("the job file names no backup"))?;
@@ -240,7 +347,7 @@ pub fn undo(home: &Path, mount: &Path, jobs: &Path) -> io::Result<()> {
         Op::Unlink => {
             // Recover from a crash after removing the symlink before renaming staging.
             if home.symlink_metadata().is_err() {
-                std::os::unix::fs::symlink(cloud_path(mount, home), home)?;
+                std::os::unix::fs::symlink(cloud_of(home, mount, Some(&job)), home)?;
             }
             match fs::remove_dir_all(staging(home)) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
@@ -260,7 +367,7 @@ pub fn adopt_old_moves(jobs: &Path, backups: &Path) {
         return;
     }
     let _ = fs::create_dir_all(jobs);
-    for home in FOLDERS.iter().filter_map(|&d| home_path(d)) {
+    for (_, home) in home_paths() {
         if !fs::symlink_metadata(&home).is_ok_and(|m| m.file_type().is_symlink()) {
             continue;
         }
@@ -274,8 +381,8 @@ pub fn adopt_old_moves(jobs: &Path, backups: &Path) {
             .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&prefix)))
             .max();
         if let Some(backup) = newest {
-            eprintln!("nuvolo: checking that {} was fully copied from {}", home.display(), backup.display());
-            let _ = write_job(jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: None, error: None });
+            eprintln!("rclover: checking that {} was fully copied from {}", home.display(), backup.display());
+            let _ = write_job(jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: None, cloud: None, error: None });
         }
     }
 }
@@ -285,7 +392,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nuvolo-homedirs-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("rclover-homedirs-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -299,7 +406,7 @@ mod tests {
         fs::create_dir_all(&mount).unwrap();
         fs::write(home.join("note.txt"), "hello").unwrap();
 
-        link(&home, &mount, &root.join("backups"), &jobs).unwrap();
+        link(&home, &cloud_path(&mount, &home), &mount, &root.join("backups"), &jobs).unwrap();
         let Status::Unfinished(job) = status(&home, &mount, &jobs) else { panic!("a started move is unfinished") };
         assert_eq!(job.op, Op::Link);
         assert_eq!(fs::read_to_string(job.backup.as_ref().unwrap().join("note.txt")).unwrap(), "hello");
@@ -320,13 +427,47 @@ mod tests {
     }
 
     #[test]
+    fn links_to_a_cloud_folder_with_another_name() {
+        let root = tmp("custom");
+        let (home, mount, jobs) = (root.join("Pictures"), root.join("mount"), root.join("jobs"));
+        let cloud = mount.join("Photos/Phone");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("a.jpg"), "x").unwrap();
+        assert!(link(&home, &root.join("elsewhere"), &mount, &root.join("backups"), &jobs).is_err(), "only into the drive");
+        link(&home, &cloud, &mount, &root.join("backups"), &jobs).unwrap();
+        let Status::Unfinished(job) = status(&home, &mount, &jobs) else { panic!() };
+        finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
+        clear_job(&jobs, &home);
+        assert_eq!(fs::read_link(&home).unwrap(), cloud);
+        assert_eq!(rel_in(&mount, &cloud_of(&home, &mount, None)), "Photos/Phone");
+        assert!(cloud.join("a.jpg").exists());
+
+        start_unlink(&home, &mount, &jobs).unwrap();
+        let Status::Unfinished(job) = status(&home, &mount, &jobs) else { panic!() };
+        finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
+        assert_eq!(fs::read_to_string(home.join("a.jpg")).unwrap(), "x", "moved back from the custom folder");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sets_user_dirs_entries() {
+        let home = Path::new("/home/me");
+        let text = "# comment\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_MUSIC_DIR=\"$HOME/\"\n";
+        assert_eq!(
+            set_user_dir(text, "MUSIC", &home.join("Music"), home),
+            "# comment\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_MUSIC_DIR=\"$HOME/Music\"\n"
+        );
+        assert_eq!(set_user_dir("", "VIDEOS", Path::new("/data/Videos"), home), "XDG_VIDEOS_DIR=\"/data/Videos\"\n");
+    }
+
+    #[test]
     fn a_failed_move_to_the_cloud_can_be_undone() {
         let root = tmp("undo");
         let (home, mount, jobs) = (root.join("Pictures"), root.join("mount"), root.join("jobs"));
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&mount).unwrap();
         fs::write(home.join("cat.jpg"), "meow").unwrap();
-        link(&home, &mount, &root.join("backups"), &jobs).unwrap();
+        link(&home, &cloud_path(&mount, &home), &mount, &root.join("backups"), &jobs).unwrap();
         // The copy never ran (the drive was down): the link points at an empty cloud folder.
         assert!(matches!(status(&home, &mount, &jobs), Status::Unfinished(_)));
         undo(&home, &mount, &jobs).unwrap();
@@ -344,7 +485,7 @@ mod tests {
         fs::create_dir_all(&backup).unwrap();
         fs::write(backup.join("doc.txt"), "important").unwrap();
         // Simulate crash after rename(home, backup) and before creating the symlink: `home` is missing.
-        write_job(&jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: Some(mount.clone()), error: None }).unwrap();
+        write_job(&jobs, &home, &Job { op: Op::Link, backup: Some(backup), mount: Some(mount.clone()), cloud: None, error: None }).unwrap();
 
         let Status::Unfinished(job) = status(&home, &mount, &jobs) else {
             panic!("crash between rename and symlink must stay Unfinished");
@@ -364,6 +505,22 @@ mod tests {
     }
 
     #[test]
+    fn takes_over_a_move_back_started_under_the_old_name() {
+        let root = tmp("legacy-staging");
+        let (home, mount, jobs) = (root.join("Videos"), root.join("mount"), root.join("jobs"));
+        fs::create_dir_all(cloud_path(&mount, &home)).unwrap();
+        let old = root.join(".Videos.nuvolo-restore");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("clip.mp4"), "v").unwrap();
+        write_job(&jobs, &home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), cloud: None, error: None }).unwrap();
+        let Status::Unfinished(job) = status(&home, &mount, &jobs) else { panic!("seen as unfinished") };
+        finish(&home, &mount, &job, &AtomicUsize::new(0)).unwrap();
+        assert_eq!(fs::read_to_string(home.join("clip.mp4")).unwrap(), "v");
+        assert!(!old.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn unlink_crash_before_rename_is_recoverable() {
         let root = tmp("crash-unlink");
         let (home, mount, jobs) = (root.join("Music"), root.join("mount"), root.join("jobs"));
@@ -374,7 +531,7 @@ mod tests {
         fs::create_dir_all(&stage).unwrap();
         fs::write(stage.join("song.flac"), "audio").unwrap();
         // Simulate crash after removing the symlink and before renaming staging to home.
-        write_job(&jobs, &home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), error: None }).unwrap();
+        write_job(&jobs, &home, &Job { op: Op::Unlink, backup: None, mount: Some(mount.clone()), cloud: None, error: None }).unwrap();
 
         let Status::Unfinished(job) = status(&home, &mount, &jobs) else {
             panic!("crash between remove_file and rename(staging, home) must stay Unfinished");

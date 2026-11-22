@@ -1,7 +1,7 @@
 //! Running home-folder moves in the background, and resuming interrupted ones. Works without
 //! the window: progress is in `Engine::jobs`, outcomes are notifications.
 
-use super::{clear_job, finish, home_path, jobs_root, read_job, status, write_job, Job, Op, Status, FOLDERS};
+use super::{clear_job, cloud_of, finish, home_paths, jobs_root, read_job, rel_in, status, write_job, Job, Op, Status};
 use crate::engine::{Progress, Shared};
 use gtk::{gio, glib};
 use serde_json::Value;
@@ -44,6 +44,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
     glib::spawn_future_local(async move {
         let name = home.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let id = format!("home-{name}");
+        let folder = rel_in(&mount, &cloud_of(&home, &mount, Some(&job)));
         let (h, m, j) = (home.clone(), mount.clone(), job.clone());
         let res = gio::spawn_blocking(move || finish(&h, &m, &j, &count).map_err(|e| e.to_string()))
             .await
@@ -54,7 +55,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
             e.borrow_mut().jobs.remove(&home);
             crate::ui::refresh_home();
             let what = if job.op == Op::Link { "to the cloud" } else { "back to this device" };
-            return crate::notify::notify(&id, &format!("Could not move {name} {what}"), &format!("{} Nothing was lost. Resume or undo it in Nuvolo → Preferences → Home Folders.", crate::errors::explain(&err)));
+            return crate::notify::notify(&id, &format!("Could not move {name} {what}"), &format!("{} Nothing was lost. Resume or undo it in rclover → Preferences → Home Folders.", crate::errors::explain(&err)));
         }
         if job.op == Op::Link {
             // The files are in the cache; wait until rclone has uploaded the moved folder.
@@ -68,7 +69,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
                 };
                 let left = match target {
                     Some((client, fs_)) => {
-                        let folder = name.clone();
+                        let folder = folder.clone();
                         gio::spawn_blocking(move || {
                             client
                                 .call_local("vfs/queue", serde_json::json!({ "fs": fs_ }))
@@ -100,7 +101,7 @@ pub fn run(e: &Shared, home: PathBuf, mount: PathBuf, job: Job) {
                             return crate::notify::notify(
                                 &id,
                                 &format!("Upload of {name} was interrupted"),
-                                "Nothing was lost. Nuvolo can resume once the drive is mounted again (Preferences → Home Folders).",
+                                "Nothing was lost. rclover can resume once the drive is mounted again (Preferences → Home Folders).",
                             );
                         }
                         if let Some(p) = e.borrow_mut().jobs.get_mut(&home) {
@@ -131,9 +132,8 @@ pub fn resume_all(e: &Shared) {
     let todo: Vec<(PathBuf, PathBuf, Job)> = {
         let eng = e.borrow();
         let jobs = jobs_root();
-        FOLDERS
-            .iter()
-            .filter_map(|&d| home_path(d))
+        home_paths()
+            .map(|(_, h)| h)
             .filter(|h| !eng.jobs.contains_key(h))
             .filter_map(|h| {
                 let mount = if let Ok(target) = fs::read_link(&h) {
@@ -154,7 +154,7 @@ pub fn resume_all(e: &Shared) {
             .collect()
     };
     for (home, mount, job) in todo {
-        eprintln!("nuvolo: resuming the move of {}", home.display());
+        eprintln!("rclover: resuming the move of {}", home.display());
         run(e, home, mount, job);
     }
 }

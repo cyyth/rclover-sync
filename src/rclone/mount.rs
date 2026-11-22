@@ -79,13 +79,13 @@ pub fn mount(c: &Client, cfg: &Config, a: &Account, caps: RcloneCaps) -> Result<
     if polls {
         // Returns at once; rclone lists the whole drive as a background job.
         if let Err(e) = c.call_local("vfs/refresh", json!({ "fs": a.fs(), "recursive": "true", "_async": true })) {
-            eprintln!("nuvolo: preloading folder listings of {}: {e}", a.remote);
+            eprintln!("rclover: preloading folder listings of {}: {e}", a.remote);
         }
     }
     Ok(())
 }
 
-/// The API host of cloud services Nuvolo can check before mounting.
+/// The API host of cloud services rclover can check before mounting.
 fn service_host(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "drive" => "www.googleapis.com",
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn canonical_mount_path_resolves_symlinked_parent() {
-        let root = std::env::temp_dir().join(format!("nuvolo-canon-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rclover-canon-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let real_cloud = root.join("real_cloud");
         std::fs::create_dir_all(&real_cloud).unwrap();

@@ -1,11 +1,11 @@
 %global debug_package %{nil}
 
-Name:           nuvolo
-Version:        0.2.5
+Name:           rclover
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
-URL:            https://github.com/cyythanapong-netizen/nuvolo-sync
+URL:            https://github.com/cyythanapong-netizen/rclover-sync
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -15,14 +15,17 @@ BuildRequires:  pkgconfig(gtk4)
 BuildRequires:  pkgconfig(libadwaita-1)
 Requires:       rclone
 Requires:       fuse3
-Recommends:     nuvolo-nautilus
+Recommends:     rclover-nautilus
+# Formerly Nuvolo: replaces it on upgrade.
+Provides:       nuvolo = %{version}-%{release}
+Obsoletes:      nuvolo < 0.3.0
 
 %description
-Nuvolo mounts Google Drive, OneDrive and any other rclone remote under ~/Cloud,
+rclover mounts Google Drive, OneDrive and any other rclone remote under ~/Cloud,
 downloads files only when they are opened, and keeps chosen folders offline.
 
 %prep
-%autosetup -n nuvolo-sync-%{version}
+%autosetup -n rclover-sync-%{version}
 
 %build
 cargo build --release --locked
@@ -36,12 +39,20 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %files
 %license LICENSE
 %doc README.md
-%{_bindir}/nuvolo
-%{_datadir}/applications/io.github.cyythanapong_netizen.Nuvolo.desktop
-%{_datadir}/dbus-1/services/io.github.cyythanapong_netizen.Nuvolo.service
-%{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Nuvolo*.svg
+%{_bindir}/rclover
+%{_datadir}/applications/io.github.cyythanapong_netizen.Rclover.desktop
+%{_datadir}/dbus-1/services/io.github.cyythanapong_netizen.Rclover.service
+%{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Rclover*.svg
 
 %changelog
+* Sun Nov 22 2026 Thanapong Chuangyanyong - 0.3.0-1
+- Renamed from Nuvolo to rclover (rclone + clover); settings, offline copies and sync state
+  move over on first start, and the package replaces nuvolo
+- Offline folders renamed or moved in the cloud stay offline under their new name; ones
+  deleted in the cloud go to the Trash instead of being uploaded again
+- Home Folders lists every XDG folder, can link to any folder on the drive, and keeps
+  user-dirs.dirs from being reset at login (which removed the folder icons in GNOME Files)
+
 * Sun Nov 22 2026 Thanapong Chuangyanyong - 0.2.5-1
 - Offline copies sync both ways once per mount, then follow the cloud one way, so uploads
   through the mount no longer abort syncs or bring deleted files back

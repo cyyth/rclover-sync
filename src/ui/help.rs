@@ -7,24 +7,24 @@ use gtk::glib;
 
 /// The emblems the GNOME Files extension draws, and what each one means.
 const EMBLEMS: [(&str, &str, &str); 6] = [
-    ("emblem-nuvolo-cloud", "In the cloud", "Not on this device. Opening it downloads it, which needs the internet."),
-    ("emblem-nuvolo-cached", "Downloaded", "Opened before, so a copy is in the on-demand cache. It may be cleared when the cache needs room."),
-    ("emblem-nuvolo-pinned", "Always on this device", "Set to Offline: kept on this device, also when Nuvolo is not running."),
-    ("emblem-nuvolo-partial", "Partly on this device", "A folder holding some files that are downloaded or kept offline."),
-    ("emblem-nuvolo-syncing", "Syncing", "Uploading or downloading right now."),
-    ("emblem-nuvolo-error", "Sync failed", "The last upload or download failed. Transfers & Queue shows why."),
+    ("emblem-rclover-cloud", "In the cloud", "Not on this device. Opening it downloads it, which needs the internet."),
+    ("emblem-rclover-cached", "Downloaded", "Opened before, so a copy is in the on-demand cache. It may be cleared when the cache needs room."),
+    ("emblem-rclover-pinned", "Always on this device", "Set to Offline: kept on this device, also when rclover is not running."),
+    ("emblem-rclover-partial", "Partly on this device", "A folder holding some files that are downloaded or kept offline."),
+    ("emblem-rclover-syncing", "Syncing", "Uploading or downloading right now."),
+    ("emblem-rclover-error", "Sync failed", "The last upload or download failed. Transfers & Queue shows why."),
 ];
 
 impl Ui {
     pub fn help(&self) {
         let page = adw::PreferencesPage::new();
 
-        let icons = group("Icons in GNOME Files", Some("Nuvolo marks files in your drives with these small icons."));
+        let icons = group("Icons in GNOME Files", Some("rclover marks files in your drives with these small icons."));
         let theme = gtk::IconTheme::for_display(&gtk::prelude::WidgetExt::display(&self.window));
         if !theme.has_icon(EMBLEMS[0].0) {
             let row = adw::ActionRow::builder()
                 .title("The GNOME Files extension is not installed")
-                .subtitle("Install nuvolo-nautilus to see these icons and a Nuvolo menu in GNOME Files.")
+                .subtitle("Install rclover-nautilus to see these icons and an rclover menu in GNOME Files.")
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
             icons.add(&row);
@@ -55,7 +55,7 @@ impl Ui {
             ),
             (
                 "Safety stops",
-                "If a sync would delete more than half of an offline folder, or every file in it changed at once, Nuvolo stops and asks: click Sync Anyway on the Overview page if that was intended.".to_owned(),
+                "If a sync would delete more than half of an offline folder, or every file in it changed at once, rclover stops and asks: click Sync Anyway on the Overview page if that was intended.".to_owned(),
             ),
         ] {
             conflicts.add(&adw::ActionRow::builder().title(title).subtitle(glib::markup_escape_text(&what).as_str()).subtitle_lines(0).build());

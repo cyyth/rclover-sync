@@ -23,16 +23,25 @@ Build and install
 
 This installs into ``~/.local`` by default. Set ``PREFIX`` to change that. It installs:
 
-* ``bin/nuvolo``
+* ``bin/rclover``
 * the desktop entry
-* a D-Bus service file, so GNOME Files can start Nuvolo when it needs file states
+* a D-Bus service file, so GNOME Files can start rclover when it needs file states
 
 Fedora packages
 ---------------
 
 Every release has one RPM, for Fedora 44 and newer, attached on GitHub::
 
-   sudo dnf install ./nuvolo-*.rpm
+   sudo dnf install ./rclover-*.rpm
+
+Upgrading from Nuvolo
+---------------------
+
+rclover used to be called Nuvolo. The RPM replaces the ``nuvolo`` package, and ``make
+install`` removes the files an install under the old name left. Quit Nuvolo before starting
+rclover: on its first start rclover moves ``~/.config/nuvolo``, ``~/.cache/nuvolo`` and
+``~/.local/share/nuvolo`` to ``rclover`` folders, so settings, offline copies, sync state and
+unfinished home-folder moves carry over, and Start at Login stays on.
 
 Uninstall
 ---------

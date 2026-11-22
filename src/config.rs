@@ -1,4 +1,4 @@
-//! User configuration, stored as TOML in `~/.config/nuvolo/config.toml`.
+//! User configuration, stored as TOML in `~/.config/rclover/config.toml`.
 
 use gtk::glib;
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,21 @@ impl Account {
         format!("{}:", self.remote)
     }
 
+    /// The folder at `old` is now at `new` in the cloud: its modes, and those inside it, move
+    /// along.
+    pub fn move_modes(&mut self, old: &str, new: &str) {
+        let keys: Vec<String> = self.modes.keys().filter(|p| *p == old || p.starts_with(&format!("{old}/"))).cloned().collect();
+        for k in keys {
+            let m = self.modes.remove(&k).expect("listed");
+            self.modes.insert(format!("{new}{}", &k[old.len()..]), m);
+        }
+    }
+
+    /// `rel` was deleted in the cloud: forgets its modes and those inside it.
+    pub fn forget(&mut self, rel: &str) {
+        self.modes.retain(|p, _| p != rel && !p.starts_with(&format!("{rel}/")));
+    }
+
     /// True if something strictly inside `rel` has its own mode, different from `rel`'s.
     pub fn is_mixed(&self, rel: &str) -> bool {
         let rel = rel.trim_matches('/');
@@ -167,7 +182,7 @@ impl Default for Config {
 }
 
 pub fn path() -> PathBuf {
-    glib::user_config_dir().join("nuvolo").join("config.toml")
+    glib::user_config_dir().join("rclover").join("config.toml")
 }
 
 /// Loads the config. A file that does not parse is moved aside rather than overwritten later.
@@ -179,7 +194,7 @@ pub fn load() -> Result<Config, String> {
     toml::from_str(&text).or_else(|e| {
         let backup = p.with_extension("toml.bak");
         fs::rename(&p, &backup).map_err(|r| format!("{}: {e}; could not move it aside: {r}", p.display()))?;
-        eprintln!("nuvolo: {} is invalid ({e}); moved to {}", p.display(), backup.display());
+        eprintln!("rclover: {} is invalid ({e}); moved to {}", p.display(), backup.display());
         Ok(Config::default())
     })
 }
@@ -195,6 +210,21 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_follow_a_renamed_folder() {
+        let mut a = Account::new("t");
+        a.modes.insert("Projects/nuvolo".into(), Mode::Pinned);
+        a.modes.insert("Projects/nuvolo/target".into(), Mode::Excluded);
+        a.modes.insert("Projects/nuvolo-old".into(), Mode::Pinned);
+        a.move_modes("Projects/nuvolo", "Projects/rclover");
+        assert_eq!(a.mode_of("Projects/rclover"), Mode::Pinned);
+        assert_eq!(a.mode_of("Projects/rclover/target"), Mode::Excluded);
+        assert_eq!(a.mode_of("Projects/nuvolo"), Mode::OnDemand);
+        assert_eq!(a.mode_of("Projects/nuvolo-old"), Mode::Pinned, "a sibling with the same prefix stays");
+        a.forget("Projects/rclover");
+        assert_eq!(a.modes.len(), 1);
+    }
 
     #[test]
     fn mode_is_inherited_from_nearest_ancestor() {
