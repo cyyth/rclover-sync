@@ -1,11 +1,11 @@
 %global debug_package %{nil}
 
 Name:           rclover
-Version:        0.3.2
+Version:        0.3.3
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
-URL:            https://github.com/cyythanapong-netizen/rclover-sync
+URL:            https://github.com/cyyth/rclover-sync
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -45,6 +45,11 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Rclover*.svg
 
 %changelog
+* Mon Nov 23 2026 Thanapong Chuangyanyong - 0.3.3-1
+- Storage on This Device is one bar: the On-demand cache (green) and the Offline folders
+  (blue) fill it, and the empty part is what is left of the limit
+- Softer logo background; .deb packages for Debian and Ubuntu next to the RPMs
+
 * Mon Nov 23 2026 Thanapong Chuangyanyong - 0.3.2-1
 - UI/UX improvements: active account checkmark and live mount status in the sidebar, plus
   Remove Account in Preferences

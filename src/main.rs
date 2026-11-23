@@ -31,8 +31,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub const APP_ID: &str = "io.github.cyythanapong_netizen.Rclover";
-pub const REPO_URL: &str = "https://github.com/cyythanapong-netizen/rclover-sync";
-pub const DOCS_URL: &str = "https://cyythanapong-netizen.github.io/rclover-sync/";
+pub const REPO_URL: &str = "https://github.com/cyyth/rclover-sync";
+pub const DOCS_URL: &str = "https://cyyth.github.io/rclover-sync/";
 
 const CSS: &str = "
 .pill-badge { border-radius: 9999px; padding: 2px 10px; font-weight: bold; font-size: 0.85em; }
@@ -40,8 +40,8 @@ const CSS: &str = "
 .pill-badge.warning { background: alpha(@warning_color, 0.15); color: @warning_color; }
 .pill-badge.error { background: alpha(@error_color, 0.15); color: @error_color; }
 .stat { padding: 14px 16px; }
-progressbar.storage-pinned > trough > progress { background-color: @blue_3; border-color: @blue_3; }
-progressbar.storage-cache > trough > progress { background-color: @green_4; border-color: @green_4; }
+.dot-pinned { color: @blue_3; }
+.dot-cache { color: @green_4; }
 .status-dot { font-size: 0.9em; }
 .status-dot.success { color: @success_color; }
 .status-dot.warning { color: @warning_color; }

@@ -314,7 +314,7 @@ impl Ui {
             .issue_url(format!("{}/issues", crate::REPO_URL))
             .build();
         d.add_link("Documentation", crate::DOCS_URL);
-        d.add_link("GNOME Files Extension", "https://github.com/cyythanapong-netizen/rclover-nautilus");
+        d.add_link("GNOME Files Extension", "https://github.com/cyyth/rclover-nautilus");
         d.add_link("rclone", "https://rclone.org");
         d.present(Some(&self.window));
     }

@@ -48,13 +48,13 @@ def reach(geom):
     x0, y0, x1, y1 = geom.bounds
     return max(-x0, -y0, x1, y1)
 
-FRAME = ('<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a30"/>'
-         '<stop offset="1" stop-color="#121214"/></linearGradient>'
+FRAME = ('<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c2b27"/>'
+         '<stop offset="1" stop-color="#0a1210"/></linearGradient>'
          '<radialGradient id="haze" cx=".2" cy=".1" r=".95"><stop offset="0" stop-color="#2ec27e" stop-opacity=".18"/>'
          '<stop offset=".45" stop-color="#3584e4" stop-opacity=".07"/><stop offset="1" stop-color="#9141ac" stop-opacity="0"/></radialGradient></defs>'
-         '<rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)"/>'
-         '<rect x="8" y="8" width="112" height="112" rx="28" fill="url(#haze)"/>'
-         '<rect x="8.5" y="8.5" width="111" height="111" rx="27.5" fill="none" stroke="#fff" stroke-opacity=".16"/>')
+         '<rect x="8" y="8" width="112" height="112" rx="18" fill="url(#bg)"/>'
+         '<rect x="8" y="8" width="112" height="112" rx="18" fill="url(#haze)"/>'
+         '<rect x="8.5" y="8.5" width="111" height="111" rx="17.5" fill="none" stroke="#fff" stroke-opacity=".16"/>')
 MINT = "#8ff0a4"
 
 leaves = clover(False)
