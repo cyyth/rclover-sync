@@ -34,6 +34,13 @@ Every release has one RPM, for Fedora 44 and newer, attached on GitHub::
 
    sudo dnf install ./rclover-*.rpm
 
+Debian and Ubuntu packages
+--------------------------
+
+Every release also has a ``.deb`` for Ubuntu 24.04 and newer::
+
+   sudo apt install ./rclover_*.deb
+
 Upgrading from Nuvolo
 ---------------------
 

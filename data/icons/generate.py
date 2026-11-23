@@ -50,8 +50,8 @@ def reach(geom):
 
 FRAME = ('<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a30"/>'
          '<stop offset="1" stop-color="#121214"/></linearGradient>'
-         '<radialGradient id="haze" cx=".2" cy=".1" r=".95"><stop offset="0" stop-color="#2ec27e" stop-opacity=".55"/>'
-         '<stop offset=".45" stop-color="#3584e4" stop-opacity=".25"/><stop offset="1" stop-color="#9141ac" stop-opacity="0"/></radialGradient></defs>'
+         '<radialGradient id="haze" cx=".2" cy=".1" r=".95"><stop offset="0" stop-color="#2ec27e" stop-opacity=".18"/>'
+         '<stop offset=".45" stop-color="#3584e4" stop-opacity=".07"/><stop offset="1" stop-color="#9141ac" stop-opacity="0"/></radialGradient></defs>'
          '<rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)"/>'
          '<rect x="8" y="8" width="112" height="112" rx="28" fill="url(#haze)"/>'
          '<rect x="8.5" y="8.5" width="111" height="111" rx="27.5" fill="none" stroke="#fff" stroke-opacity=".16"/>')
