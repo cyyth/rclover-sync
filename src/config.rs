@@ -63,6 +63,9 @@ pub struct Account {
     pub mount: PathBuf,
     #[serde(default = "yes")]
     pub background_sync: bool,
+    /// True once the user has dismissed the shared OAuth client banner for this account.
+    #[serde(default)]
+    pub oauth_banner_dismissed: bool,
     /// Per-path overrides, relative to the remote root ("" is the root).
     #[serde(default)]
     pub modes: BTreeMap<String, Mode>,
@@ -78,6 +81,7 @@ impl Account {
             remote: remote.to_owned(),
             mount: glib::home_dir().join("Cloud").join(remote),
             background_sync: true,
+            oauth_banner_dismissed: false,
             modes: BTreeMap::new(),
         }
     }

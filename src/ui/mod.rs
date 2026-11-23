@@ -109,6 +109,10 @@ pub struct Ui {
     ignore: gtk::ListBox,
     home: gtk::ListBox,
     login: adw::SwitchRow,
+    /// Reused remount toast, so stepping spin rows updates one toast instead of stacking them.
+    remount_toast: RefCell<Option<adw::Toast>>,
+    /// Last rendered sidebar account statuses, so the sidebar redraws only when state changes.
+    acct_summary: RefCell<Vec<(String, String, &'static str, bool)>>,
     /// What the activity lists show: (transfer list generation, page). Redrawn only on change.
     shown: RefCell<(u64, String)>,
 }
@@ -212,6 +216,8 @@ impl Ui {
                 .subtitle("Mount your drives in the background when you log in. Needed for home folders kept in the cloud.")
                 .active(prefs::autostart_file().exists())
                 .build(),
+            remount_toast: RefCell::new(None),
+            acct_summary: RefCell::new(Vec::new()),
             shown: RefCell::new((u64::MAX, String::new())),
         });
         ui.stack.add_named(&ui.overview_page(), Some("overview"));
@@ -230,6 +236,16 @@ impl Ui {
         let ui = self.clone();
         self.nav.connect_row_selected(move |_, row| {
             let Some(row) = row else { return };
+            let id = row.widget_name();
+            if let Some((_, text, _)) = PAGES.iter().find(|p| p.0 == id.as_str()) {
+                ui.stack.set_visible_child_name(&id);
+                ui.title.set_title(text);
+                ui.split.set_show_content(true);
+                ui.tick();
+            }
+        });
+        let ui = self.clone();
+        self.nav.connect_row_activated(move |_, row| {
             let id = row.widget_name();
             if let Some((_, text, _)) = PAGES.iter().find(|p| p.0 == id.as_str()) {
                 ui.stack.set_visible_child_name(&id);
@@ -263,14 +279,26 @@ impl Ui {
     }
 
     /// A toast for a saved setting that needs a remount, with a button to remount now.
+    /// Reuses an active remount toast if one is already showing so stepping a spin row does not stack duplicates.
     fn toast_remount(self: &Rc<Self>, msg: &str) {
-        let t = adw::Toast::builder().title(glib::markup_escape_text(msg).as_str()).button_label("Remount Now").build();
+        let escaped = glib::markup_escape_text(msg);
+        if let Some(existing) = self.remount_toast.borrow().as_ref() {
+            existing.set_title(escaped.as_str());
+            self.toasts.add_toast(existing.clone());
+            return;
+        }
+        let t = adw::Toast::builder().title(escaped.as_str()).button_label("Remount Now").build();
         let ui = self.clone();
         t.connect_button_clicked(move |_| {
             let n = ui.e.borrow().cfg.accounts.len();
             let errors: Vec<String> = (0..n).filter_map(|i| ui.e.borrow_mut().remount(i).err()).collect();
             ui.toast(&if errors.is_empty() { "Remounting…".to_owned() } else { errors.join("; ") });
         });
+        let ui = self.clone();
+        t.connect_dismissed(move |_| {
+            *ui.remount_toast.borrow_mut() = None;
+        });
+        *self.remount_toast.borrow_mut() = Some(t.clone());
         self.toasts.add_toast(t);
     }
 
@@ -293,6 +321,7 @@ impl Ui {
 
     /// Redraws what the visible page shows from the engine's latest state.
     fn tick(self: &Rc<Self>) {
+        self.tick_accounts_sidebar();
         if self.e.borrow().cfg.accounts.get(self.acct.get()).is_none() {
             return;
         }

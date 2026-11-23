@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - run: pip install sphinx
+      - run: pip install sphinx shibuya
       - run: sphinx-build -W -b html docs docs/_build/html
       - uses: actions/upload-pages-artifact@v3
         with:

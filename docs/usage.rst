@@ -15,6 +15,9 @@ Sync modes
 
 Each folder has one of three modes, set on the **Folders & Cache** page:
 
+.. image:: _static/screenshots/folders.png
+   :alt: rclover Folders & Cache page
+
 On-Demand
    The folder is listed, but files use no disk space until opened. Opened files stay in
    the VFS cache until they expire or the cache is full.
@@ -110,6 +113,9 @@ then holds just ``B``, the pinned folder, with all its files.
 Storage on this device
 ~~~~~~~~~~~~~~~~~~~~~~
 
+.. image:: _static/screenshots/storage-and-activity.png
+   :alt: rclover Storage on This Device and Recent Activity
+
 Local storage has two parts, each with its own bar on the Overview page:
 
 Offline folders (blue)
@@ -125,6 +131,9 @@ changes as you open files.
 
 Home folders
 ------------
+
+.. image:: _static/screenshots/home-folders.png
+   :alt: rclover Home Folders in Preferences
 
 Preferences → **Home Folders** moves Documents, Pictures, Music and the other XDG folders
 into the selected drive. The real folder then lives in the drive (for example
@@ -208,6 +217,9 @@ for that (``gnome-shell-extension-appindicator`` on Fedora).
 Errors and notifications
 ------------------------
 
+.. image:: _static/screenshots/transfers.png
+   :alt: rclover Transfers & Queue page with explained error
+
 Every error rclover shows says what happened in plain words, then what to do about it: "No
 internet connection", "Your sign-in has expired", "This device is out of disk space", and so
 on. The original error is in the tooltip, for bug reports.
@@ -233,8 +245,12 @@ for files that are already cached.
 Custom OAuth client
 -------------------
 
+.. image:: _static/screenshots/oauth-and-ignore.png
+   :alt: rclover OAuth & Security and Ignore Patterns in Preferences
+
 Google Drive remotes created with rclone's built-in client share their API quota with every
-other rclone user. rclover shows a banner when that is the case. Create a *Desktop app*
+other rclone user. rclover shows a banner when that is the case (which you can dismiss from
+the setup dialog if you prefer to keep using the shared client). Create a *Desktop app*
 OAuth client in Google Cloud Console, enter it with **Use Custom Client ID**, then use
 **Reconnect Account** in Preferences.
 

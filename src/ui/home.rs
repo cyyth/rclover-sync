@@ -44,9 +44,19 @@ impl Ui {
             );
             let row = adw::ActionRow::builder().title(glib::markup_escape_text(&name).as_str()).subtitle_lines(0).build();
             let sub = |t: &str| row.set_subtitle(&glib::markup_escape_text(t));
+            let xdg_icon = match key {
+                "DESKTOP" => "user-desktop-symbolic",
+                "DOCUMENTS" => "folder-documents-symbolic",
+                "DOWNLOAD" => "folder-download-symbolic",
+                "MUSIC" => "folder-music-symbolic",
+                "PICTURES" => "folder-pictures-symbolic",
+                "VIDEOS" => "folder-videos-symbolic",
+                "TEMPLATES" => "folder-templates-symbolic",
+                "PUBLICSHARE" => "folder-publicshare-symbolic",
+                _ => "folder-symbolic",
+            };
             let icon = match &status {
-                Status::Local => "folder-symbolic",
-                Status::Linked | Status::Elsewhere(_) => "folder-remote-symbolic",
+                Status::Local | Status::Linked | Status::Elsewhere(_) => xdg_icon,
                 Status::Unfinished(j) if j.error.is_some() => "dialog-warning-symbolic",
                 Status::Unfinished(_) => "folder-download-symbolic",
             };

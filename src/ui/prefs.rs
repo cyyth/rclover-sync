@@ -134,11 +134,23 @@ impl Ui {
         btn.connect_clicked(move |b| ui.reconnect(b));
         reconnect.add_suffix(&btn);
         g.add(&reconnect);
+        let remove = adw::ActionRow::builder()
+            .title("Remove Account")
+            .subtitle("Unmount this drive and remove it from rclover. Files in the cloud are kept.")
+            .build();
+        remove.add_prefix(&gtk::Image::from_icon_name("user-trash-symbolic"));
+        let rm_btn = button("Remove…");
+        rm_btn.add_css_class("destructive-action");
+        let ui = self.clone();
+        rm_btn.connect_clicked(move |_| ui.remove_account_dialog());
+        remove.add_suffix(&rm_btn);
+        g.add(&remove);
         page.add(&g);
 
         let g = group("Ignore Patterns", Some("Glob patterns passed to rclone as exclude rules. Matching files are never uploaded or cached."));
         g.add(&self.ignore);
         let entry = adw::EntryRow::builder().title("Add a pattern, e.g. *.log").show_apply_button(true).build();
+        entry.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
         entry.set_margin_top(12);
         let add_list = boxed();
         add_list.append(&entry);
@@ -204,8 +216,20 @@ impl Ui {
         list.append(&secret);
         d.set_extra_child(Some(&list));
         d.add_response("cancel", "Cancel");
+        d.add_response("dismiss", "Dismiss Warning");
         d.add_response("save", "Save");
         d.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        let ui = self.clone();
+        d.connect_response(Some("dismiss"), move |_, _| {
+            {
+                let mut e = ui.e.borrow_mut();
+                if let Some(a) = e.cfg.accounts.get_mut(ui.acct.get()) {
+                    a.oauth_banner_dismissed = true;
+                }
+                e.save();
+            }
+            ui.banner.set_revealed(false);
+        });
         let ui = self.clone();
         d.connect_response(Some("save"), move |_, _| {
             let id = id.text().trim().to_owned();
@@ -260,6 +284,31 @@ impl Ui {
             let res = ui.e.borrow_mut().remount(i);
             ui.toast(&res.map_or_else(|e| format!("Reconnected; remount later ({})", explain(&e)), |_| "Account reconnected".to_owned()));
         });
+    }
+
+    pub(super) fn remove_account_dialog(self: &Rc<Self>) {
+        let i = self.acct.get();
+        let Some((remote, mount)) = self.e.borrow().cfg.accounts.get(i).map(|a| (a.remote.clone(), a.mount.display().to_string())) else {
+            return;
+        };
+        let d = adw::AlertDialog::new(
+            Some(&format!("Remove “{remote}”?")),
+            Some(&format!(
+                "rclover will unmount {mount} and stop managing this account. Your files in the cloud and your rclone remote configuration are untouched."
+            )),
+        );
+        d.add_response("cancel", "Cancel");
+        d.add_response("remove", "Remove Account");
+        d.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+        let ui = self.clone();
+        d.connect_response(Some("remove"), move |_, _| {
+            ui.e.borrow_mut().remove_account(i);
+            let next = ui.acct.get().min(ui.e.borrow().cfg.accounts.len().saturating_sub(1));
+            ui.rebuild_accounts();
+            ui.select_account(next);
+            ui.toast(&format!("Removed “{remote}”"));
+        });
+        d.present(Some(&self.window));
     }
 }
 

@@ -50,6 +50,7 @@ impl Ui {
                     .title(glib::markup_escape_text(t["name"].as_str().unwrap_or("?")).as_str())
                     .subtitle(format!("{} of {} · {}/s{eta}", human(bytes), human(size), human(speed)))
                     .build();
+                row.add_prefix(&gtk::Image::from_icon_name("network-transmit-receive-symbolic"));
                 let bar = gtk::ProgressBar::builder().fraction(t["percentage"].as_f64().unwrap_or(0.0) / 100.0).valign(gtk::Align::Center).width_request(140).build();
                 row.add_suffix(&bar);
                 tr.active.append(&row);

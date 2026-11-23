@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           rclover
-Version:        0.3.1
+Version:        0.3.2
 Release:        1%{?dist}
 Summary:        GNOME cloud-drive manager with on-demand rclone mounts
 License:        GPL-3.0-or-later
@@ -45,6 +45,18 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 %{_datadir}/icons/hicolor/*/apps/io.github.cyythanapong_netizen.Rclover*.svg
 
 %changelog
+* Mon Nov 23 2026 Thanapong Chuangyanyong - 0.3.2-1
+- UI/UX improvements: active account checkmark and live mount status in the sidebar, plus
+  Remove Account in Preferences
+- Shared OAuth client warning can be dismissed per account
+- Overview stat cards wrap error explanations, show concise session totals, and scale
+  Offline and On-demand storage bars proportionally
+- Folders & Cache notes when subfolders inside a folder have custom modes; Transfers & Queue
+  explains failed transfer errors in plain words with direction/status icons
+- Home Folders rows use semantic XDG folder icons; stepping cache settings reuses a single
+  remount toast; collapsed sidebar opens the active page on single click
+- Documentation uses the Shibuya Sphinx theme with the rclover logo and updated screenshots
+
 * Sun Nov 22 2026 Thanapong Chuangyanyong - 0.3.1-1
 - Upgrading from Nuvolo keeps the sync state of offline folders, so files deleted in the
   cloud are no longer uploaded again

@@ -78,6 +78,8 @@ impl Overview {
         let (c_speed, stat_speed, stat_speed_sub) = stat_card("Data Speed");
         let (c_streams, stat_streams, _) = stat_card("Active Streams");
         let (c_err, stat_errors, stat_errors_sub) = stat_card("Errors");
+        stat_errors_sub.set_wrap(true);
+        stat_errors_sub.set_lines(3);
         let storage = Storage::new();
         let grid = gtk::Grid::builder().column_spacing(12).row_spacing(12).column_homogeneous(true).build();
         grid.attach(&c_fps, 0, 0, 1, 1);
@@ -251,7 +253,7 @@ impl Ui {
         ov.pause_row.set_subtitle(&format!("{transferring} active · {} uploads waiting", e.pending_uploads(&a.remote)));
         ov.stat_fps.set_label(&e.files_per_sec.to_string());
         ov.stat_speed.set_label(&format!("{}/s", human(e.speed)));
-        ov.stat_speed_sub.set_label(&format!("{} transferred this session", human(e.core["bytes"].as_f64().unwrap_or(0.0))));
+        ov.stat_speed_sub.set_label(&format!("{} this session", human(e.core["bytes"].as_f64().unwrap_or(0.0))));
         ov.stat_streams.set_label(&transferring.to_string());
         let used = e.vfs.get(&a.remote).and_then(|v| v["diskCache"]["bytesUsed"].as_f64()).unwrap_or(0.0);
         let files = e.vfs.get(&a.remote).and_then(|v| v["diskCache"]["files"].as_u64()).unwrap_or(0);
@@ -319,12 +321,14 @@ impl Storage {
     fn show(&self, pinned: Option<u64>, used: f64, files: u64, limit_gib: u32, age_hours: u32) {
         let limit = limit_gib as f64 * 1024f64.powi(3);
         let p = pinned.map(|b| b as f64);
-        self.total.set_label(&format!("{} used · at most {}", human(p.unwrap_or(0.0) + used), human(p.unwrap_or(0.0) + limit)));
+        let p_bytes = p.unwrap_or(0.0);
+        let max_total = (p_bytes + limit).max(1.0);
+        self.total.set_label(&format!("{} used · at most {}", human(p_bytes + used), human(p_bytes + limit)));
         self.pinned_value.set_label(&p.map_or_else(|| "measured after the next sync".to_owned(), human));
-        // The offline part has no limit: it is exactly what is pinned, so its bar is full.
-        self.pinned_bar.set_fraction(if p.unwrap_or(0.0) > 0.0 { 1.0 } else { 0.0 });
+        // Scale against the combined local storage ceiling so both bars compare proportionally.
+        self.pinned_bar.set_fraction((p_bytes / max_total).min(1.0));
         self.cache_value.set_label(&format!("{} of {limit_gib} GiB", human(used)));
-        self.cache_bar.set_fraction((used / limit).min(1.0));
+        self.cache_bar.set_fraction((used / limit.max(1.0)).min(1.0));
         self.cache_note.set_label(&format!(
             "Files you opened from On-Demand folders ({files} now). The oldest are cleared when it is full, or after {}. Change the size in Preferences.",
             if age_hours % 24 == 0 { format!("{} days", age_hours / 24) } else { format!("{age_hours} hours") }

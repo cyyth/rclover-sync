@@ -52,15 +52,58 @@ impl Ui {
     }
 
     pub(super) fn rebuild_accounts(self: &Rc<Self>) {
+        *self.acct_summary.borrow_mut() = Vec::new();
+        self.tick_accounts_sidebar();
+    }
+
+    pub(super) fn tick_accounts_sidebar(self: &Rc<Self>) {
+        let summary: Vec<(String, String, &'static str, bool)> = {
+            let e = self.e.borrow();
+            let cur = self.acct.get();
+            e.cfg
+                .accounts
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let (sub, kind) = match e.mount_state(i) {
+                        crate::engine::MountState::Mounting => ("Mounting…".to_owned(), "warning"),
+                        crate::engine::MountState::Failed(err) => (
+                            if crate::errors::is_offline(&err) { "Offline".to_owned() } else { "Not Mounted".to_owned() },
+                            "error",
+                        ),
+                        crate::engine::MountState::Mounted if e.paused => ("Paused".to_owned(), "warning"),
+                        crate::engine::MountState::Mounted => (
+                            if a.on_demand() { "Mounted · On-Demand".to_owned() } else { "Mounted · Offline".to_owned() },
+                            "success",
+                        ),
+                    };
+                    (a.remote.clone(), sub, kind, i == cur)
+                })
+                .collect()
+        };
+        if *self.acct_summary.borrow() == summary && self.accounts.first_child().is_some() {
+            return;
+        }
+        *self.acct_summary.borrow_mut() = summary.clone();
         self.accounts.remove_all();
-        for a in &self.e.borrow().cfg.accounts {
+        for (remote, sub, kind, is_current) in &summary {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-            row.append(&adw::Avatar::new(32, Some(&a.remote), true));
+            row.append(&adw::Avatar::new(32, Some(remote), true));
             let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
             text.set_hexpand(true);
-            text.append(&label(&a.remote, &[]));
-            text.append(&label(&a.mount.to_string_lossy(), &["caption", "dim-label"]));
+            let title_classes: &[&str] = if *is_current { &["heading"] } else { &[] };
+            text.append(&label(remote, title_classes));
+            let sub_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let dot = label("●", &["status-dot", kind]);
+            sub_box.append(&dot);
+            sub_box.append(&label(sub, &["caption", "dim-label"]));
+            text.append(&sub_box);
             row.append(&text);
+            if *is_current {
+                let chk = gtk::Image::from_icon_name("object-select-symbolic");
+                chk.add_css_class("accent");
+                row.append(&chk);
+            }
             self.accounts.append(&row);
         }
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -71,7 +114,8 @@ impl Ui {
 
     pub(super) fn select_account(self: &Rc<Self>, i: usize) {
         self.acct.set(i);
-        let (remote, mount, bg, on_demand) = {
+        self.tick_accounts_sidebar();
+        let (remote, mount, bg, on_demand, dismissed) = {
             let e = self.e.borrow();
             let Some(a) = e.cfg.accounts.get(i) else {
                 self.title.set_subtitle("No account yet");
@@ -79,7 +123,13 @@ impl Ui {
                 self.banner.set_revealed(false);
                 return;
             };
-            (a.remote.clone(), a.mount.to_string_lossy().into_owned(), a.background_sync, a.on_demand())
+            (
+                a.remote.clone(),
+                a.mount.to_string_lossy().into_owned(),
+                a.background_sync,
+                a.on_demand(),
+                a.oauth_banner_dismissed,
+            )
         };
         self.title.set_subtitle(&remote);
         self.ov.mount_row.set_subtitle(&glib::markup_escape_text(&mount));
@@ -95,7 +145,7 @@ impl Ui {
                     return;
                 }
                 let client_id = info["client_id"].as_str().unwrap_or("");
-                ui.banner.set_revealed(info["type"] == "drive" && client_id.is_empty());
+                ui.banner.set_revealed(info["type"] == "drive" && client_id.is_empty() && !dismissed);
                 ui.client_row.set_subtitle(if client_id.is_empty() { "rclone shared client (rate-limited)" } else { client_id });
             });
         }

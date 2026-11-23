@@ -367,6 +367,38 @@ impl Engine {
         i
     }
 
+    /// Removes account `i` from configuration and unmounts its drive in the background.
+    pub fn remove_account(&mut self, i: usize) {
+        if i >= self.cfg.accounts.len() {
+            return;
+        }
+        let a = self.cfg.accounts.remove(i);
+        self.save();
+        self.mount_errors.remove(&a.remote);
+        self.offline_errors.remove(&a.remote);
+        self.offline_bytes.remove(&a.remote);
+        self.vfs.remove(&a.remote);
+        self.mounting.remove(&i);
+        self.unmounting.remove(&i);
+        self.remount_later.remove(&i);
+        self.unhealthy_strikes.remove(&i);
+        self.offline_running.remove(&i);
+        self.offline_pushed.remove(&i);
+        self.offline_dirs.remove(&i);
+        crate::notify::withdraw(&format!("mount-{}", a.remote));
+        crate::notify::withdraw(&format!("offline-{}", a.remote));
+        crate::notify::withdraw(&format!("offline-busy-{}", a.remote));
+        if let Some(client) = self.client.clone() {
+            let mount_point = rclone::canonical_mount_path(&a.mount);
+            std::thread::spawn(move || {
+                let mounted = rclone::mounted_paths();
+                if rclone::is_mounted_path(&mounted, &mount_point) {
+                    let _ = client.call_for("mount/unmount", json!({ "mountPoint": mount_point }), std::time::Duration::from_secs(10));
+                }
+            });
+        }
+    }
+
     pub fn ticks(&self) -> u64 {
         self.ticks
     }
