@@ -73,8 +73,22 @@ impl Ui {
     }
 
     pub(super) fn folder_row(self: &Rc<Self>, name: &str) -> adw::ActionRow {
-        let mode = self.e.borrow().cfg.accounts.get(self.acct.get()).map_or(Mode::OnDemand, |a| a.mode_of(name));
-        let row = adw::ActionRow::builder().title(glib::markup_escape_text(name).as_str()).subtitle(mode_label(mode)).build();
+        let (mode, mixed) = self
+            .e
+            .borrow()
+            .cfg
+            .accounts
+            .get(self.acct.get())
+            .map_or((Mode::OnDemand, false), |a| (a.mode_of(name), a.is_mixed(name)));
+        let sub = if mixed {
+            format!("{} · some subfolders inside are set differently", mode_label(mode))
+        } else {
+            mode_label(mode).to_owned()
+        };
+        let row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(name).as_str())
+            .subtitle(glib::markup_escape_text(&sub).as_str())
+            .build();
         row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
         let linked = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         linked.add_css_class("linked");
@@ -92,8 +106,14 @@ impl Ui {
                     return;
                 }
                 let res = ui.e.borrow_mut().set_mode(ui.acct.get(), &name, m);
+                let mixed = ui.e.borrow().cfg.accounts.get(ui.acct.get()).is_some_and(|a| a.is_mixed(&name));
+                let sub = if mixed {
+                    format!("{} · some subfolders inside are set differently", mode_label(m))
+                } else {
+                    mode_label(m).to_owned()
+                };
                 ui.rebuild_home(); // the Home Folders rows show each folder's mode
-                row.set_subtitle(mode_label(m));
+                row.set_subtitle(glib::markup_escape_text(&sub).as_str());
                 match res {
                     Ok(()) if m == Mode::Pinned => ui.toast(&format!("Downloading “{name}” to keep it offline")),
                     Ok(()) => {}

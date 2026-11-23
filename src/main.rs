@@ -42,6 +42,10 @@ const CSS: &str = "
 .stat { padding: 14px 16px; }
 progressbar.storage-pinned > trough > progress { background-color: @blue_3; border-color: @blue_3; }
 progressbar.storage-cache > trough > progress { background-color: @green_4; border-color: @green_4; }
+.status-dot { font-size: 0.9em; }
+.status-dot.success { color: @success_color; }
+.status-dot.warning { color: @warning_color; }
+.status-dot.error { color: @error_color; }
 ";
 
 fn main() -> glib::ExitCode {

@@ -91,10 +91,21 @@ pub(super) fn button(text: &str) -> gtk::Button {
 pub(super) fn done_row(t: &Value) -> adw::ActionRow {
     let err = t["error"].as_str().unwrap_or("");
     let when = t["completed_at"].as_str().and_then(|s| s.get(11..16)).unwrap_or("");
+    let subtitle = if err.is_empty() {
+        format!("{} · {when}", human(t["size"].as_f64().unwrap_or(0.0)))
+    } else {
+        crate::errors::explain(err)
+    };
     let row = adw::ActionRow::builder()
         .title(glib::markup_escape_text(t["name"].as_str().unwrap_or("?")).as_str())
-        .subtitle(glib::markup_escape_text(&if err.is_empty() { format!("{} · {when}", human(t["size"].as_f64().unwrap_or(0.0))) } else { err.to_owned() }).as_str())
+        .subtitle(glib::markup_escape_text(&subtitle).as_str())
+        .subtitle_lines(0)
         .build();
+    let icon = if err.is_empty() { "object-select-symbolic" } else { "dialog-error-symbolic" };
+    row.add_prefix(&gtk::Image::from_icon_name(icon));
+    if !err.is_empty() {
+        row.set_tooltip_text(Some(err));
+    }
     row.add_suffix(&if err.is_empty() { pill("Done", "success") } else { pill("Error", "error") });
     row
 }

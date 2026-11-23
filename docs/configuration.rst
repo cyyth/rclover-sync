@@ -4,6 +4,9 @@ Configuration
 Settings are stored in ``~/.config/rclover/config.toml``. The Preferences page edits
 this file. Editing it by hand while rclover is closed also works.
 
+.. image:: _static/screenshots/preferences.png
+   :alt: rclover Preferences page
+
 If the file does not parse, rclover moves it to ``config.toml.bak`` and starts with defaults.
 
 Example
