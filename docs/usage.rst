@@ -116,7 +116,9 @@ Storage on this device
 .. image:: _static/screenshots/storage-and-activity.png
    :alt: rclover Storage on This Device and Recent Activity
 
-Local storage has two parts, each with its own bar on the Overview page:
+Local storage has two parts, shown together in one bar on the Overview page. The bar is as
+long as the most rclover may use (Offline folders plus the cache size limit); the cache fills
+it first, then the Offline folders, and the empty part is what is left:
 
 Offline folders (blue)
    Always kept, as large as what you set to Offline. Pinning 100 GiB takes 100 GiB.
@@ -282,5 +284,5 @@ in GNOME Files, and how conflicts are settled.
 GNOME Files integration
 -----------------------
 
-Install `rclover-nautilus <https://github.com/cyythanapong-netizen/rclover-nautilus>`_ to
+Install `rclover-nautilus <https://github.com/cyyth/rclover-nautilus>`_ to
 get status emblems and a **rclover** right-click menu in GNOME Files.

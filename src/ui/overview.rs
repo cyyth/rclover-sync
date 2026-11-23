@@ -8,7 +8,7 @@ use crate::engine::{MountState, OfflineProblem};
 use crate::errors::{explain, is_offline};
 use adw::prelude::*;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 #[derive(PartialEq, Eq)]
@@ -274,16 +274,16 @@ impl Ui {
     }
 }
 
-/// The "Storage on This Device" card: two labelled bars. Offline folders are the fixed part
-/// (always kept, as large as what is pinned); the on-demand cache is the part that comes and
-/// goes, up to its limit.
+/// The "Storage on This Device" card: one bar that spans everything rclover may use on this
+/// device (Offline folders + the cache limit), filled with the cache (green), then the
+/// Offline folders (blue); what is left is free headroom.
 struct Storage {
     card: gtk::Box,
     total: gtk::Label,
+    bar: gtk::DrawingArea,
+    fractions: Rc<Cell<(f64, f64)>>, // (cache, pinned) as parts of the bar
     pinned_value: gtk::Label,
-    pinned_bar: gtk::ProgressBar,
     cache_value: gtk::Label,
-    cache_bar: gtk::ProgressBar,
     cache_note: gtk::Label,
 }
 
@@ -295,40 +295,65 @@ impl Storage {
         card.append(&label("Storage on This Device", &["caption-heading", "dim-label"]));
         let total = label("–", &["title-2", "numeric"]);
         card.append(&total);
-        let part = |name: &str, class: &str, note: &str| {
-            let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            head.set_margin_top(6);
-            head.append(&label(name, &["heading"]));
+
+        let fractions = Rc::new(Cell::new((0.0, 0.0)));
+        let bar = gtk::DrawingArea::builder().content_height(10).margin_top(4).margin_bottom(4).build();
+        let f = fractions.clone();
+        bar.set_draw_func(move |area, cr, w, h| {
+            let (w, h) = (w as f64, h as f64);
+            let (cache, pinned) = f.get();
+            let c = area.color();
+            // rounded track, everything else is clipped to it
+            cr.new_sub_path();
+            cr.arc(h / 2.0, h / 2.0, h / 2.0, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
+            cr.arc(w - h / 2.0, h / 2.0, h / 2.0, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+            cr.close_path();
+            cr.clip();
+            cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, 0.15);
+            let _ = cr.paint();
+            cr.set_source_rgb(0.2, 0.82, 0.48); // green_4
+            cr.rectangle(0.0, 0.0, w * cache, h);
+            let _ = cr.fill();
+            cr.set_source_rgb(0.38, 0.63, 0.92); // blue_3
+            cr.rectangle(w * cache, 0.0, w * pinned, h);
+            let _ = cr.fill();
+        });
+        card.append(&bar);
+
+        let row = |dot: &str, name: &str| {
+            let r = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            r.append(&label("●", &[dot]));
+            r.append(&label(name, &["heading"]));
             let value = label("–", &["numeric"]);
             value.set_hexpand(true);
             value.set_xalign(1.0);
-            head.append(&value);
-            let bar = gtk::ProgressBar::new();
-            bar.add_css_class(class);
-            let note = label(note, &["caption", "dim-label"]);
-            note.set_ellipsize(gtk::pango::EllipsizeMode::None);
-            note.set_wrap(true);
-            card.append(&head);
-            card.append(&bar);
-            card.append(&note);
-            (value, bar, note)
+            r.append(&value);
+            card.append(&r);
+            value
         };
-        let (pinned_value, pinned_bar, _) = part("Offline folders", "storage-pinned", "Always on this device, also when rclover is not running. As large as what you set to Offline.");
-        let (cache_value, cache_bar, cache_note) = part("On-demand cache", "storage-cache", "");
-        Storage { card, total, pinned_value, pinned_bar, cache_value, cache_bar, cache_note }
+        let pinned_value = row("dot-pinned", "Offline folders");
+        let pinned_note = label("Always on this device, also when rclover is not running. As large as what you set to Offline.", &["caption", "dim-label"]);
+        pinned_note.set_wrap(true);
+        pinned_note.set_xalign(0.0);
+        card.append(&pinned_note);
+        let cache_value = row("dot-cache", "On-demand cache");
+        let cache_note = label("", &["caption", "dim-label"]);
+        cache_note.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        cache_note.set_wrap(true);
+        cache_note.set_xalign(0.0);
+        card.append(&cache_note);
+        Storage { card, total, bar, fractions, pinned_value, cache_value, cache_note }
     }
 
     fn show(&self, pinned: Option<u64>, used: f64, files: u64, limit_gib: u32, age_hours: u32) {
         let limit = limit_gib as f64 * 1024f64.powi(3);
-        let p = pinned.map(|b| b as f64);
-        let p_bytes = p.unwrap_or(0.0);
+        let p_bytes = pinned.map_or(0.0, |b| b as f64);
         let max_total = (p_bytes + limit).max(1.0);
         self.total.set_label(&format!("{} used · at most {}", human(p_bytes + used), human(p_bytes + limit)));
-        self.pinned_value.set_label(&p.map_or_else(|| "measured after the next sync".to_owned(), human));
-        // Scale against the combined local storage ceiling so both bars compare proportionally.
-        self.pinned_bar.set_fraction((p_bytes / max_total).min(1.0));
+        self.pinned_value.set_label(&pinned.map_or_else(|| "measured after the next sync".to_owned(), |b| human(b as f64)));
         self.cache_value.set_label(&format!("{} of {limit_gib} GiB", human(used)));
-        self.cache_bar.set_fraction((used / limit.max(1.0)).min(1.0));
+        self.fractions.set(((used.min(limit) / max_total).max(0.0), p_bytes / max_total));
+        self.bar.queue_draw();
         self.cache_note.set_label(&format!(
             "Files you opened from On-Demand folders ({files} now). The oldest are cleared when it is full, or after {}. Change the size in Preferences.",
             if age_hours % 24 == 0 { format!("{} days", age_hours / 24) } else { format!("{age_hours} hours") }
